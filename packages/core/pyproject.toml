@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "loomcraft"
+version = "0.1.0"
+description = "An AI-native DAG planning and execution engine: agents publish validated task graphs, the server executes them, the UI renders them."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "LoomCraft contributors" }]
+keywords = [
+  "agent",
+  "dag",
+  "workflow",
+  "orchestration",
+  "llm",
+  "tool-use",
+  "planning",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+  "Typing :: Typed",
+]
+
+# The engine itself needs nothing but pydantic. Providers and the HTTP layer
+# are opt-in so embedding LoomCraft never forces a web framework on you.
+dependencies = ["pydantic>=2.7,<3"]
+
+[project.optional-dependencies]
+server = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9"]
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.30"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5", "mypy>=1.10"]
+all = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "python-multipart>=0.0.9",
+  "anthropic>=0.40",
+]
+
+[project.urls]
+Homepage = "https://github.com/jity16/Loomcraft"
+Repository = "https://github.com/jity16/Loomcraft"
+Documentation = "https://github.com/jity16/Loomcraft/tree/main/docs"
+Issues = "https://github.com/jity16/Loomcraft/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/loomcraft"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+ignore_missing_imports = true

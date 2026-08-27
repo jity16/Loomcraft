@@ -1,0 +1,39 @@
+{
+  "name": "@loomcraft/renderer",
+  "version": "0.1.0",
+  "description": "React renderer and state reducer for LoomCraft agent-authored task DAGs.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": ["*.css"],
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && cp src/styles.css dist/styles.css",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types tests/*.test.ts",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": { "optional": false }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.7.0"
+  },
+  "keywords": ["loomcraft", "dag", "agent", "react", "workflow", "visualization"],
+  "repository": { "type": "git", "url": "git+https://github.com/jity16/Loomcraft.git", "directory": "packages/renderer" },
+  "engines": { "node": ">=20" }
+}

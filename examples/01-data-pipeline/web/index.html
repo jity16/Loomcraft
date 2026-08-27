@@ -1,0 +1,400 @@
+<!doctype html>
+<html lang="en" data-lc-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LoomCraft · CSV quality</title>
+    <!--
+      A dependency-free demo of the LoomCraft front-end contract.
+
+      This deliberately does NOT import @loomcraft/renderer — it is a single
+      file you can open, read, and diff against the TypeScript package to see
+      that the protocol is small enough to reimplement in any framework:
+
+        POST /sessions                        create a task
+        POST /sessions/{id}/uploads           attach files
+        POST /sessions/{id}/turn              start work, stream SSE back
+        GET  /sessions/{id}/history           rebuild state after a reload
+        GET  /sessions/{id}/artifacts/{id}    download a deliverable
+
+      The reducer below is a direct port of `reduceLoomEvent` in
+      packages/renderer/src/state.ts, and the layout is a port of
+      packages/renderer/src/layout.ts. In a React app you would import both
+      instead of copying them.
+    -->
+    <style>
+      :root {
+        --canvas: #f7f8fa; --surface: #fff; --sunken: #f1f3f6;
+        --hair: #e7eaef; --line: #d9dee6;
+        --ink: #1a2029; --ink2: #47505d; --ink3: #6b7686;
+        --accent: #3f5bd9; --accent-wash: #eef1fd;
+        --run: #2f6fd0; --run-wash: #e9f1fb;
+        --ok: #24734f; --ok-wash: #e8f4ee;
+        --err: #c03434; --err-wash: #fbeced;
+        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; height: 100vh; display: flex; flex-direction: column;
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        color: var(--ink); background: var(--canvas);
+      }
+      header {
+        display: flex; gap: 12px; align-items: center;
+        padding: 12px 16px; background: var(--surface);
+        border-bottom: 1px solid var(--hair);
+      }
+      h1 { margin: 0; font-size: 15px; }
+      .phase {
+        padding: 2px 8px; font-size: 11px; font-weight: 600; border-radius: 99px;
+        color: var(--ink3); background: var(--sunken); text-transform: capitalize;
+      }
+      .phase[data-phase="executing"] { color: var(--run); background: var(--run-wash); }
+      .phase[data-phase="completed"] { color: var(--ok); background: var(--ok-wash); }
+      main { flex: 1; display: grid; grid-template-columns: 1fr 360px; min-height: 0; }
+      #canvas {
+        position: relative; overflow: hidden; background-color: var(--canvas);
+        background-image: radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0);
+        background-size: 20px 20px;
+      }
+      #stage { position: absolute; transform-origin: 0 0; }
+      .node {
+        position: absolute; width: 224px; height: 92px; padding: 10px 12px;
+        display: flex; flex-direction: column; gap: 4px;
+        background: var(--surface); border: 1px solid var(--line);
+        border-radius: 10px; font-size: 13px;
+      }
+      .node[data-status="running"]   { background: var(--run-wash); border-color: #9dbde6; }
+      .node[data-status="succeeded"] { background: var(--ok-wash);  border-color: #9ac4ae; }
+      .node[data-status="failed"]    { background: var(--err-wash); border-color: #e0a0a0; }
+      .node[data-status="skipped"]   { background: var(--sunken); opacity: .65; }
+      .node .title { font-weight: 600; line-height: 1.3; }
+      .node .meta  { font-family: var(--mono); font-size: 10px; color: var(--ink3); }
+      .node .foot  { margin-top: auto; display: flex; gap: 6px; align-items: center;
+                     font-size: 10px; font-weight: 600; color: var(--ink3); }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: #9aa2af; }
+      .dot[data-status="running"]   { background: var(--run); animation: pulse 1.4s infinite; }
+      .dot[data-status="succeeded"] { background: var(--ok); }
+      .dot[data-status="failed"]    { background: var(--err); }
+      @keyframes pulse { 50% { opacity: .3; } }
+      aside {
+        display: flex; flex-direction: column; gap: 12px; padding: 12px;
+        overflow-y: auto; background: var(--surface); border-left: 1px solid var(--hair);
+      }
+      .panel { border: 1px solid var(--hair); border-radius: 10px; padding: 12px; }
+      .panel h2 {
+        margin: 0 0 8px; font-size: 11px; font-weight: 700; letter-spacing: .05em;
+        text-transform: uppercase; color: var(--ink3);
+      }
+      #timeline { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+      .t-tool { font-family: var(--mono); font-size: 11px; color: var(--ink3); }
+      .t-tool.bad { color: var(--err); }
+      .t-user { padding: 8px 10px; background: var(--sunken); border-radius: 6px; }
+      .t-err  { color: var(--err); }
+      #artifacts a { display: block; font-size: 12px; padding: 6px 0; color: var(--accent); }
+      form { display: flex; gap: 8px; padding: 12px 16px;
+             background: var(--surface); border-top: 1px solid var(--hair); }
+      input[type="text"] {
+        flex: 1; padding: 9px 12px; font: inherit; font-size: 13px;
+        border: 1px solid var(--line); border-radius: 6px; background: var(--canvas);
+      }
+      button, label.file {
+        padding: 8px 14px; font: inherit; font-size: 13px; font-weight: 500;
+        border: 1px solid var(--line); border-radius: 6px;
+        background: var(--surface); color: var(--ink2); cursor: pointer;
+      }
+      button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+      button:disabled { opacity: .55; cursor: not-allowed; }
+      .empty { color: var(--ink3); font-size: 12px; margin: 0; }
+      svg .edge { fill: none; stroke: var(--line); stroke-width: 1.6; }
+      svg .edge[data-tone="active"] { stroke: var(--run); stroke-width: 2.2;
+        stroke-dasharray: 6 5; animation: flow .9s linear infinite; }
+      svg .edge[data-tone="done"] { stroke: var(--ok); }
+      @keyframes flow { to { stroke-dashoffset: -22; } }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>LoomCraft · CSV quality</h1>
+      <span class="phase" id="phase" data-phase="idle">idle</span>
+      <span id="session" style="font-family: var(--mono); font-size: 11px; color: var(--ink3)"></span>
+    </header>
+
+    <main>
+      <div id="canvas"><div id="stage"></div></div>
+      <aside>
+        <div class="panel">
+          <h2>Plan</h2>
+          <p class="empty" id="plan-meta">No plan yet.</p>
+        </div>
+        <div class="panel">
+          <h2>Activity</h2>
+          <div id="timeline"><p class="empty">Nothing yet.</p></div>
+        </div>
+        <div class="panel">
+          <h2>Deliverables</h2>
+          <div id="artifacts"><p class="empty">No artifacts yet.</p></div>
+        </div>
+      </aside>
+    </main>
+
+    <form id="composer">
+      <label class="file">
+        Attach
+        <input type="file" id="file" multiple hidden />
+      </label>
+      <input type="text" id="message" placeholder="Assess the quality of the uploaded table." />
+      <button type="submit" class="primary" id="send">Send</button>
+    </form>
+
+    <script type="module">
+      const API = "/api/v1/loomcraft";
+
+      // ── State: a direct port of reduceLoomEvent ──────────────────────────
+      let state = {
+        plan: null, plans: [], timeline: [], artifacts: [], lastSeq: 0, done: false,
+      };
+
+      function reduce(state, { event, data = {}, seq }) {
+        const next = { ...state, lastSeq: Math.max(state.lastSeq, seq ?? 0) };
+        switch (event) {
+          case "plan_published":
+            return { ...next, plan: data.plan, plans: [...next.plans.filter(p => p.revision !== data.plan.revision), data.plan] };
+          case "step_updated": {
+            if (!next.plan) return next;
+            return {
+              ...next,
+              plan: {
+                ...next.plan,
+                steps: next.plan.steps.map(s => (s.id === data.step.id ? { ...s, ...data.step } : s)),
+              },
+            };
+          }
+          case "artifact_registered":
+            return next.artifacts.some(a => a.id === data.artifact.id)
+              ? next
+              : { ...next, artifacts: [...next.artifacts, data.artifact] };
+          case "execution_finished": {
+            const merged = [...next.artifacts];
+            for (const a of data.execution.artifacts ?? []) {
+              if (!merged.some(x => x.id === a.id)) merged.push(a);
+            }
+            return { ...next, artifacts: merged };
+          }
+          case "tool_call":
+            return { ...next, timeline: [...next.timeline, { kind: "tool", id: data.item_id, tool: data.tool, status: "running" }] };
+          case "tool_result":
+            return {
+              ...next,
+              timeline: next.timeline.map(i =>
+                i.kind === "tool" && i.id === data.item_id
+                  ? { ...i, status: "done", ok: data.ok !== false, error: data.error }
+                  : i),
+            };
+          case "message":
+            return { ...next, timeline: [...next.timeline, { kind: "assistant", text: data.text }] };
+          case "notice":
+            return { ...next, timeline: [...next.timeline, { kind: "notice", text: data.message }] };
+          case "error":
+            return { ...next, timeline: [...next.timeline, { kind: "error", text: data.message }] };
+          case "done":
+            return { ...next, done: true };
+          default:
+            return next;              // unknown events must never break the UI
+        }
+      }
+
+      // ── Layout: a port of layoutPlan ─────────────────────────────────────
+      const W = 224, H = 92, GAP_X = 32, GAP_Y = 64, PAD = 28;
+
+      function layout(plan) {
+        if (!plan) return { nodes: [], edges: [], width: 0, height: 0 };
+        const byId = new Map(plan.steps.map(s => [s.id, s]));
+        const depth = new Map();
+        const resolve = (id, seen = new Set()) => {
+          if (depth.has(id)) return depth.get(id);
+          if (seen.has(id)) return 0;
+          seen.add(id);
+          const deps = (byId.get(id)?.depends_on ?? []).filter(d => byId.has(d));
+          const value = deps.length ? 1 + Math.max(...deps.map(d => resolve(d, seen))) : 0;
+          depth.set(id, value);
+          return value;
+        };
+        plan.steps.forEach(s => resolve(s.id));
+
+        const layers = [];
+        for (const step of plan.steps) {
+          const level = depth.get(step.id);
+          (layers[level] ??= []).push(step.id);
+        }
+        layers.forEach(l => l.sort());
+
+        const widest = Math.max(...layers.map(l => l.length));
+        const span = widest * W + (widest - 1) * GAP_X;
+        const nodes = [];
+        layers.forEach((layer, row) => {
+          const extent = layer.length * W + (layer.length - 1) * GAP_X;
+          const offset = PAD + (span - extent) / 2;
+          layer.forEach((id, col) => {
+            nodes.push({
+              id, step: byId.get(id),
+              x: offset + col * (W + GAP_X),
+              y: PAD + row * (H + GAP_Y),
+            });
+          });
+        });
+
+        const at = new Map(nodes.map(n => [n.id, n]));
+        const edges = [];
+        for (const step of plan.steps) {
+          const target = at.get(step.id);
+          for (const dep of step.depends_on ?? []) {
+            const source = at.get(dep);
+            if (!source || !target) continue;
+            const x1 = source.x + W / 2, y1 = source.y + H;
+            const x2 = target.x + W / 2, y2 = target.y;
+            const d = Math.max(24, (y2 - y1) / 2);
+            edges.push({
+              path: `M ${x1} ${y1} C ${x1} ${y1 + d}, ${x2} ${y2 - d}, ${x2} ${y2}`,
+              source: dep, target: step.id,
+            });
+          }
+        }
+        return {
+          nodes, edges,
+          width: Math.max(...nodes.map(n => n.x + W)) + PAD,
+          height: Math.max(...nodes.map(n => n.y + H)) + PAD,
+        };
+      }
+
+      // ── Render ───────────────────────────────────────────────────────────
+      const $ = id => document.getElementById(id);
+
+      function render() {
+        const { plan } = state;
+        $("phase").dataset.phase = state.done ? "completed"
+          : plan?.steps.some(s => s.status === "running") ? "executing"
+          : plan ? "planned" : "orienting";
+        $("phase").textContent = $("phase").dataset.phase;
+
+        $("plan-meta").textContent = plan
+          ? `R${plan.revision} · ${plan.steps.length} steps · ${plan.goal}`
+          : "No plan yet.";
+
+        const g = layout(plan);
+        const status = new Map((plan?.steps ?? []).map(s => [s.id, s.status]));
+        const svg = g.edges.map(e => {
+          const tone = status.get(e.target) === "running" ? "active"
+            : status.get(e.source) === "succeeded" && status.get(e.target) === "succeeded" ? "done" : "idle";
+          return `<path class="edge" data-tone="${tone}" d="${e.path}"/>`;
+        }).join("");
+
+        $("stage").innerHTML = g.nodes.length
+          ? `<svg width="${g.width}" height="${g.height}" style="position:absolute">${svg}</svg>` +
+            g.nodes.map(n => `
+              <div class="node" data-status="${n.step.status}" style="left:${n.x}px;top:${n.y}px">
+                <div class="title">${esc(n.step.title)}</div>
+                <div class="meta">${esc(n.step.capability ?? n.step.kind)}</div>
+                <div class="foot">
+                  <span class="dot" data-status="${n.step.status}"></span>${n.step.status}
+                  <span style="margin-left:auto;font-family:var(--mono)">${esc(n.step.id)}</span>
+                </div>
+              </div>`).join("")
+          : "";
+
+        // Fit the graph to the viewport.
+        const box = $("canvas").getBoundingClientRect();
+        if (g.width && box.width) {
+          const scale = Math.min(1.05, (box.width - 40) / g.width, (box.height - 40) / g.height);
+          $("stage").style.transform =
+            `translate(${(box.width - g.width * scale) / 2}px, ${(box.height - g.height * scale) / 2}px) scale(${scale})`;
+        }
+
+        $("timeline").innerHTML = state.timeline.length
+          ? state.timeline.map(i => {
+              if (i.kind === "tool") {
+                const mark = i.status === "running" ? "◐" : i.ok === false ? "✕" : "✓";
+                return `<div class="t-tool ${i.ok === false ? "bad" : ""}">${mark} ${esc(i.tool)}${i.error ? " — " + esc(i.error) : ""}</div>`;
+              }
+              if (i.kind === "user") return `<div class="t-user">${esc(i.text)}</div>`;
+              if (i.kind === "error") return `<div class="t-err">${esc(i.text)}</div>`;
+              return `<div>${esc(i.text)}</div>`;
+            }).join("")
+          : '<p class="empty">Nothing yet.</p>';
+
+        $("artifacts").innerHTML = state.artifacts.length
+          ? state.artifacts.map(a =>
+              `<a href="${API}/sessions/${sessionId}/artifacts/${a.id}" download>${esc(a.filename)} · ${a.size} B</a>`).join("")
+          : '<p class="empty">No artifacts yet.</p>';
+      }
+
+      const esc = s => String(s ?? "").replace(/[&<>"]/g, c =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+      // ── Transport ────────────────────────────────────────────────────────
+      let sessionId = null;
+
+      async function ensureSession() {
+        if (sessionId) return sessionId;
+        const response = await fetch(`${API}/sessions`, { method: "POST" });
+        sessionId = (await response.json()).session_id;
+        $("session").textContent = sessionId;
+        return sessionId;
+      }
+
+      $("file").addEventListener("change", async event => {
+        await ensureSession();
+        for (const file of event.target.files) {
+          const body = new FormData();
+          body.append("file", file);
+          await fetch(`${API}/sessions/${sessionId}/uploads`, { method: "POST", body });
+          state = reduce(state, { event: "notice", data: { message: `Uploaded ${file.name}` } });
+        }
+        event.target.value = "";
+        render();
+      });
+
+      $("composer").addEventListener("submit", async event => {
+        event.preventDefault();
+        const message = $("message").value.trim();
+        if (!message) return;
+        await ensureSession();
+        $("message").value = "";
+        $("send").disabled = true;
+        state = { ...state, done: false, timeline: [...state.timeline, { kind: "user", text: message }] };
+        render();
+
+        // POST + SSE: the turn runs server-side; this connection only observes.
+        const response = await fetch(`${API}/sessions/${sessionId}/turn`, {
+          method: "POST",
+          headers: { "content-type": "application/json", accept: "text/event-stream" },
+          body: JSON.stringify({ message }),
+        });
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let boundary;
+          while ((boundary = buffer.indexOf("\n\n")) >= 0) {
+            const frame = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            const payload = frame.split("\n").find(l => l.startsWith("data:"));
+            if (!payload) continue;             // comment / heartbeat frame
+            try {
+              state = reduce(state, JSON.parse(payload.slice(5).trim()));
+              render();
+            } catch { /* keep the stream alive on a malformed frame */ }
+          }
+        }
+        $("send").disabled = false;
+        render();
+      });
+
+      window.addEventListener("resize", render);
+      render();
+    </script>
+  </body>
+</html>
