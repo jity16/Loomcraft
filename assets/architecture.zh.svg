@@ -1,0 +1,147 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     width="820" height="286" viewBox="0 0 820 286" role="img"
+     aria-label="LoomCraft 请求路径：智能体调用工具，broker 校验并授权每一次调用，引擎执行 DAG，两者都写入只追加的哈希链事件日志，渲染器通过 SSE 订阅该日志。用户上传和审批从渲染器流回智能体。">
+  <title>LoomCraft 请求路径：智能体、broker、引擎、事件日志、渲染器</title>
+
+  <defs>
+    <linearGradient id="abg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fdfcf8"/>
+      <stop offset="1" stop-color="#f9f7f0"/>
+    </linearGradient>
+    <style>
+      .t { font-family: "Inter","Noto Sans SC","PingFang SC","Microsoft YaHei",ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+      .m { font-family: "JetBrains Mono","Noto Sans SC","PingFang SC","Microsoft YaHei",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+      .lbl { font-size: 9.5px; fill: #687181; text-anchor: middle; }
+    </style>
+  </defs>
+
+  <rect width="820" height="286" rx="14" fill="url(#abg)"/>
+  <rect x="0.75" y="0.75" width="818.5" height="284.5" rx="13.25" fill="none" stroke="#efece3"/>
+
+  <!-- ══ wires ══════════════════════════════════════════════════════════ -->
+  <g fill="none" stroke="#cfd4dd" stroke-width="1.8">
+    <path id="w-a2b" d="M196,58 L318,58"/>
+    <path id="w-b2a" d="M326,86 L204,86"/>
+    <path id="w-b2e" d="M526,58 L612,58"/>
+    <path id="w-e2b" d="M620,86 L534,86"/>
+    <path id="w-b2l" d="M426,104 C426,148 620,134 620,178"/>
+    <path id="w-e2l" d="M702,104 L702,178"/>
+    <path id="w-l2r" d="M560,215 L268,215"/>
+  </g>
+  <path id="w-r2a" d="M148,184 L148,110" fill="none" stroke="#b9a8d8" stroke-width="1.8" stroke-dasharray="5 5"/>
+
+  <g fill="#9aa2af">
+    <path d="M318,53.5 L326,58 L318,62.5 Z"/>
+    <path d="M204,81.5 L196,86 L204,90.5 Z"/>
+    <path d="M612,53.5 L620,58 L612,62.5 Z"/>
+    <path d="M534,81.5 L526,86 L534,90.5 Z"/>
+    <path d="M615.5,178 L620,186 L624.5,178 Z"/>
+    <path d="M697.5,178 L702,186 L706.5,178 Z"/>
+    <path d="M268,210.5 L260,215 L268,219.5 Z"/>
+  </g>
+  <path d="M143.5,110 L148,102 L152.5,110 Z" fill="#8b7cc8"/>
+
+  <!-- wire labels -->
+  <text class="m lbl" x="261" y="48">工具调用</text>
+  <text class="m lbl" x="261" y="101">结果</text>
+  <text class="m lbl" x="573" y="48">派发</text>
+  <text class="m lbl" x="573" y="101">执行结果</text>
+  <text class="m lbl" x="410" y="205">SSE · 可从任意 seq 续传</text>
+  <text class="m" x="160" y="149" font-size="9.5" fill="#7b6bb8">上传 · 审批</text>
+  <text class="m" x="438" y="144" font-size="9.5" fill="#7a8394">追加</text>
+
+  <!-- ══ animated packets — one lap of a turn every 6 seconds ═══════════ -->
+  <g>
+    <circle r="3.6" fill="#6d5bb5" opacity="0">
+      <animateMotion dur="6s" repeatCount="indefinite" calcMode="linear"
+                     keyPoints="0;0;1;1" keyTimes="0;0.02;0.20;1"><mpath xlink:href="#w-a2b"/></animateMotion>
+      <animate attributeName="opacity" dur="6s" repeatCount="indefinite" calcMode="linear"
+               values="0;1;1;0;0" keyTimes="0;0.04;0.18;0.20;1"/>
+    </circle>
+    <circle r="3.6" fill="#1661ab" opacity="0">
+      <animateMotion dur="6s" repeatCount="indefinite" calcMode="linear"
+                     keyPoints="0;0;1;1" keyTimes="0;0.22;0.38;1"><mpath xlink:href="#w-b2e"/></animateMotion>
+      <animate attributeName="opacity" dur="6s" repeatCount="indefinite" calcMode="linear"
+               values="0;0;1;1;0;0" keyTimes="0;0.22;0.24;0.36;0.38;1"/>
+    </circle>
+    <circle r="3.6" fill="#a8864b" opacity="0">
+      <animateMotion dur="6s" repeatCount="indefinite" calcMode="linear"
+                     keyPoints="0;0;1;1" keyTimes="0;0.40;0.56;1"><mpath xlink:href="#w-e2b"/></animateMotion>
+      <animate attributeName="opacity" dur="6s" repeatCount="indefinite" calcMode="linear"
+               values="0;0;1;1;0;0" keyTimes="0;0.40;0.42;0.54;0.56;1"/>
+    </circle>
+    <circle r="3.6" fill="#1661ab" opacity="0">
+      <animateMotion dur="6s" repeatCount="indefinite" calcMode="linear"
+                     keyPoints="0;0;1;1" keyTimes="0;0.58;0.76;1"><mpath xlink:href="#w-b2a"/></animateMotion>
+      <animate attributeName="opacity" dur="6s" repeatCount="indefinite" calcMode="linear"
+               values="0;0;1;1;0;0" keyTimes="0;0.58;0.60;0.74;0.76;1"/>
+    </circle>
+
+    <!-- whatever the broker and the engine do also lands in the log -->
+    <circle r="3.6" fill="#4a7d5b" opacity="0">
+      <animateMotion dur="6s" repeatCount="indefinite" calcMode="linear"
+                     keyPoints="0;0;1;1" keyTimes="0;0.20;0.34;1"><mpath xlink:href="#w-b2l"/></animateMotion>
+      <animate attributeName="opacity" dur="6s" repeatCount="indefinite" calcMode="linear"
+               values="0;0;1;1;0;0" keyTimes="0;0.20;0.22;0.32;0.34;1"/>
+    </circle>
+    <circle r="3.6" fill="#4a7d5b" opacity="0">
+      <animateMotion dur="6s" repeatCount="indefinite" calcMode="linear"
+                     keyPoints="0;0;1;1" keyTimes="0;0.38;0.50;1"><mpath xlink:href="#w-e2l"/></animateMotion>
+      <animate attributeName="opacity" dur="6s" repeatCount="indefinite" calcMode="linear"
+               values="0;0;1;1;0;0" keyTimes="0;0.38;0.40;0.48;0.50;1"/>
+    </circle>
+    <circle r="3.6" fill="#b3457e" opacity="0">
+      <animateMotion dur="6s" repeatCount="indefinite" calcMode="linear"
+                     keyPoints="0;0;1;1" keyTimes="0;0.50;0.74;1"><mpath xlink:href="#w-l2r"/></animateMotion>
+      <animate attributeName="opacity" dur="6s" repeatCount="indefinite" calcMode="linear"
+               values="0;0;1;1;0;0" keyTimes="0;0.50;0.52;0.72;0.74;1"/>
+    </circle>
+    <circle r="3.6" fill="#6d5bb5" opacity="0">
+      <animateMotion dur="6s" repeatCount="indefinite" calcMode="linear"
+                     keyPoints="0;0;1;1" keyTimes="0;0.78;0.94;1"><mpath xlink:href="#w-r2a"/></animateMotion>
+      <animate attributeName="opacity" dur="6s" repeatCount="indefinite" calcMode="linear"
+               values="0;0;1;1;0;0" keyTimes="0;0.78;0.80;0.92;0.94;1"/>
+    </circle>
+  </g>
+
+  <!-- ══ boxes ══════════════════════════════════════════════════════════ -->
+  <!-- Agent -->
+  <rect x="36" y="36" width="160" height="68" rx="11" fill="#f6f3fb" stroke="#6d5bb5" stroke-width="1.6"/>
+  <rect x="36" y="36" width="4" height="68" rx="2" fill="#6d5bb5"/>
+  <text class="t" x="54" y="62" fill="#1a2332" font-size="13.5" font-weight="600">智能体</text>
+  <text class="m" x="54" y="79" fill="#6d5bb5" font-size="9.5">任意模型 · 10 个工具</text>
+  <text class="m" x="54" y="93" fill="#7a8394" font-size="9.5">anthropic · openai · mcp</text>
+
+  <!-- Broker -->
+  <rect x="326" y="36" width="200" height="68" rx="11" fill="#eef4fa" stroke="#1661ab" stroke-width="1.8"/>
+  <rect x="326" y="36" width="4" height="68" rx="2" fill="#1661ab"/>
+  <text class="t" x="344" y="62" fill="#1a2332" font-size="13.5" font-weight="600">Broker</text>
+  <text class="m" x="344" y="79" fill="#1661ab" font-size="9.5">唯一的入口</text>
+  <text class="m" x="344" y="93" fill="#7a8394" font-size="9.5">校验 · 授权 · 派发</text>
+
+  <!-- Engine -->
+  <rect x="620" y="36" width="164" height="68" rx="11" fill="#fbf6e9" stroke="#a8864b" stroke-width="1.6"/>
+  <rect x="620" y="36" width="4" height="68" rx="2" fill="#a8864b"/>
+  <text class="t" x="638" y="62" fill="#1a2332" font-size="13.5" font-weight="600">引擎</text>
+  <text class="m" x="638" y="79" fill="#a8864b" font-size="9.5">并行 DAG 执行器</text>
+  <text class="m" x="638" y="93" fill="#7a8394" font-size="9.5">重试 · 超时 · 取消</text>
+
+  <!-- Renderer -->
+  <rect x="36" y="184" width="224" height="66" rx="11" fill="#fdf0f6" stroke="#b3457e" stroke-width="1.6"/>
+  <rect x="36" y="184" width="4" height="66" rx="2" fill="#b3457e"/>
+  <text class="t" x="54" y="210" fill="#1a2332" font-size="13.5" font-weight="600">渲染器</text>
+  <text class="m" x="54" y="227" fill="#b3457e" font-size="9.5">一个 reducer · 实时与回放共用</text>
+  <text class="m" x="54" y="241" fill="#7a8394" font-size="9.5">React · 无图布局依赖</text>
+
+  <!-- Event log -->
+  <rect x="560" y="184" width="224" height="66" rx="11" fill="#f0f6ef" stroke="#4a7d5b" stroke-width="1.6"/>
+  <rect x="560" y="184" width="4" height="66" rx="2" fill="#4a7d5b"/>
+  <text class="t" x="578" y="210" fill="#1a2332" font-size="13.5" font-weight="600">事件日志</text>
+  <text class="m" x="578" y="227" fill="#4a7d5b" font-size="9.5">只追加 · 哈希链</text>
+  <text class="m" x="578" y="241" fill="#7a8394" font-size="9.5">O(1) 追加 · 失败即拒</text>
+
+  <!-- the sentence the picture is making -->
+  <text class="m" x="410" y="270" fill="#7a8394" font-size="9.5" text-anchor="middle">
+    智能体提议 · 服务端裁决 · 日志是唯一的历史
+  </text>
+</svg>

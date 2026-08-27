@@ -42,13 +42,28 @@ EDGE_DONE = "#24734f"
 # Node fills and borders are derived the same way the CSS derives them:
 # color-mix(status, 2.5-3.5%) over the surface for the fill, 25% for the border.
 STATUS = {
-    "pending":   {"fill": SURFACE,   "stroke": LINE,      "dot": IDLE, "label": "Pending"},
-    "running":   {"fill": "#f7fafc", "stroke": "#c4d8ea", "dot": RUN,  "label": "Running"},
-    "succeeded": {"fill": "#fbfcfa", "stroke": "#dadece", "dot": OK,   "label": "Succeeded"},
-    "failed":    {"fill": "#fdf8f8", "stroke": "#efcbcb", "dot": ERR,  "label": "Failed"},
+    "pending":   {"fill": SURFACE,   "stroke": LINE,      "dot": IDLE},
+    "running":   {"fill": "#f7fafc", "stroke": "#c4d8ea", "dot": RUN},
+    "succeeded": {"fill": "#fbfcfa", "stroke": "#dadece", "dot": OK},
+    "failed":    {"fill": "#fdf8f8", "stroke": "#efcbcb", "dot": ERR},
 }
 
 GLYPH = {"capability": "◈", "workflow": "⛭", "dynamic": "⌘", "review": "⌕", "answer": "✎"}
+
+# The Chinese status and kind words are the ones the source application used, so
+# a reader who knows that UI recognises them here.
+STATUS_LABEL = {
+    "en": {"pending": "Pending", "running": "Running",
+           "succeeded": "Succeeded", "failed": "Failed", "skipped": "Skipped"},
+    "zh": {"pending": "等待", "running": "执行中",
+           "succeeded": "完成", "failed": "失败", "skipped": "跳过"},
+}
+KIND_LABEL = {
+    "en": {"capability": "Capability", "workflow": "Workflow",
+           "dynamic": "Dynamic", "review": "Review", "answer": "Answer"},
+    "zh": {"capability": "原子能力", "workflow": "Workflow",
+           "dynamic": "动态步骤", "review": "核验", "answer": "回答"},
+}
 
 # ── Geometry, from PlanGraph.tsx / layout.ts ────────────────────────────────
 NODE_W, NODE_H = 224, 92
@@ -56,10 +71,18 @@ LANE_GAP, LAYER_GAP = 26, 58
 
 # Declared once in a <style> block rather than per-element: family names with
 # spaces need quotes, and quotes do not survive an XML attribute cleanly.
-FONT_STYLE = """<style>
-  .s { font-family: "Inter", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-  .m { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-</style>"""
+_SANS = '"Inter", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto'
+_MONO = '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas'
+_CJK = '"Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei"'
+
+FONT_STYLE = {
+    "en": f'<style>\n  .s {{ font-family: {_SANS}, sans-serif; }}\n'
+          f'  .m {{ font-family: {_MONO}, monospace; }}\n</style>',
+    # CJK glyphs come from the system face; the Latin faces still win for the
+    # capability ids and numbers, which is what the mono class is mostly for.
+    "zh": f'<style>\n  .s {{ font-family: {_SANS}, {_CJK}, sans-serif; }}\n'
+          f'  .m {{ font-family: {_MONO}, {_CJK}, monospace; }}\n</style>',
+}
 
 
 def esc(text: str) -> str:
@@ -75,17 +98,18 @@ def keyed(attr: str, values: list[str], times: list[float], dur: float) -> str:
     )
 
 
-def node_svg(x: int, y: int, step: dict, track: list[tuple[float, str]], dur: float) -> str:
+def node_svg(x: int, y: int, step: dict, track: list[tuple[float, str]], dur: float,
+             lang: str = "en") -> str:
     """One plan node, animated across its status track."""
     times = [t for t, _ in track]
     states = [s for _, s in track]
     glyph = GLYPH.get(step["kind"], "◈")
-    meta = step.get("capability") or step["kind"].capitalize()
+    meta = step.get("capability") or KIND_LABEL[lang][step["kind"]]
 
     fills = [STATUS[s]["fill"] for s in states]
     strokes = [STATUS[s]["stroke"] for s in states]
     dots = [STATUS[s]["dot"] for s in states]
-    labels = [STATUS[s]["label"] for s in states]
+    labels = [STATUS_LABEL[lang][s] for s in states]
 
     # The "running" ring, drawn behind the card. Present only while running.
     ring_opacity = ["1" if s == "running" else "0" for s in states]
@@ -100,7 +124,7 @@ def node_svg(x: int, y: int, step: dict, track: list[tuple[float, str]], dur: fl
         f'<text x="{x + 23}" y="{y + 25}" class="s" font-size="12" fill="{INK2}" '
         f'text-anchor="middle">{glyph}</text>',
         f'<text x="{x + 42}" y="{y + 25}" class="s" font-size="13" font-weight="600" '
-        f'fill="{INK}">{esc(step["title"])}</text>',
+        f'fill="{INK}">{esc(step["title"][lang] if isinstance(step["title"], dict) else step["title"])}</text>',
         f'<text x="{x + 12}" y="{y + 46}" class="m" font-size="10" fill="{INK3}">'
         f'{esc(meta)}</text>',
         f'<circle cx="{x + 15}" cy="{y + 76}" r="3.5" fill="{IDLE}">'
@@ -115,8 +139,12 @@ def node_svg(x: int, y: int, step: dict, track: list[tuple[float, str]], dur: fl
             f'font-weight="600" fill="{INK3}" opacity="0">'
             f'{keyed("opacity", visible, times, dur)}{label}</text>'
         )
+    # The step id follows the status word. Chinese labels are much shorter than
+    # English ones, so a fixed offset would leave a hole in one language or
+    # collide in the other.
+    id_x = x + 26 + max(len(label) * (10 if lang == "zh" else 5.9) for label in labels) + 12
     parts.append(
-        f'<text x="{x + 92}" y="{y + 80}" class="m" font-size="10" fill="{INK3}">'
+        f'<text x="{id_x:.0f}" y="{y + 80}" class="m" font-size="10" fill="{INK3}">'
         f'{esc(step["id"])}</text></g>'
     )
     return "".join(parts)
@@ -152,15 +180,189 @@ def edge_svg(a: tuple[int, int], b: tuple[int, int], tone_track: list[tuple[floa
     )
 
 
+
+
+# ── Copy, in both languages ────────────────────────────────────────────────
+#
+# Every user-visible string in the figures below. The Chinese status and kind
+# words match the source application's own UI vocabulary.
+TEXT = {
+    "en": {
+        "hero.title": "An association plan replacing itself",
+        "hero.aria": "Revision 1 of an association plan runs to a review step, which reads a genomic inflation factor of 2.80 off the artifact and concludes the model is confounded. Revision 2 replaces it with a structure-aware plan in which ancestry axes and a relatedness matrix are dispatched together, and the corrected scan returns a calibrated inflation factor of 0.95.",
+        "hero.goal": "Find markers associated with salt tolerance in the uploaded cohort.",
+        "hero.steps5": "5 steps",
+        "hero.steps9": "9 steps",
+        "hero.summary": "QC the genotypes, scan every marker, correct for multiple testing.",
+        "hero.replanned": "Replanned: ",
+        "hero.reason": "λ = 2.8024 in revision 1 — the statistics are inflated genome-wide, which is population structure rather than signal.",
+        "hero.card1.eyebrow": "WHAT THE USER ASKED",
+        "hero.card1.l1": "Which markers are associated with salt",
+        "hero.card1.l2": "tolerance in this cohort?",
+        "hero.card1.meta": "120 samples · 150 markers",
+        "hero.card2.eyebrow": "WHAT THE AGENT CHANGED",
+        "hero.card2.l1": "The first scan was not wrong about the",
+        "hero.card2.l2": "arithmetic. It was wrong about the model:",
+        "hero.card2.l3": "ancestry moves the phenotype and most",
+        "hero.card2.l4": "allele frequencies at once.",
+        "hero.card2.meta": "λ 2.8024 → 0.9461 · 8 hits → 3",
+        "step.qc": "Quality control",
+        "step.assoc1": "Association scan",
+        "step.correct": "Multiple testing",
+        "step.review": "Is the model calibrated?",
+        "step.answer": "Report the loci",
+        "step.pca": "Ancestry axes",
+        "step.kinship": "Relatedness matrix",
+        "step.assoc2": "Structure-aware scan",
+        "step.annotate": "Annotate the hits",
+        "n.1": "revision 1 published · 5 steps · validated before anything ran",
+        "n.2": "quality control · 150 markers in, 148 out",
+        "n.3": "one scan, one marker at a time — nothing to run in parallel",
+        "n.4": "correcting for multiple testing · 8 markers survive",
+        "n.5": "review: reading the genomic inflation factor off the artifact",
+        "n.6": "λ = 2.8024 — every statistic is inflated, not eight loci. 5 of the 8 are ancestry.",
+        "n.7": "revision 2 published · the review step rewrote the plan, not the answer",
+        "n.8": "ancestry and relatedness dispatched together — no edge between them",
+        "n.9": "the scan waited for both parents · fan-in, not a race",
+        "n.10": "correcting for multiple testing",
+        "n.11": "λ = 0.9461 · 3 markers survive, and all three are real",
+        "k.title": "Which tool may complete which kind of step",
+        "k.aria": "The agent completes answer, dynamic and review steps itself through update_step. Capability and workflow steps are written only by run_capability and run_workflow, which dispatch to the engine; update_step against those kinds is refused by the broker.",
+        "k.agent": "Agent",
+        "k.agent.l1": "any model",
+        "k.agent.l2": "10 tools",
+        "k.self": "THE AGENT MAY WRITE THESE",
+        "k.self.note": "work the agent did itself, in its own sandbox",
+        "k.serv": "ONLY THE SERVER WRITES THESE",
+        "k.serv.note": "registered, typed units of work",
+        "k.out1a": "status written",
+        "k.out1b": "by the agent",
+        "k.out2a": "status + artifacts",
+        "k.out2b": "written by the engine",
+        "k.refused": "✗ update_step — refused",
+        "k.point": "so a capability step reading \"succeeded\" is always a run that really happened",
+        "l.title": "The step status transition table",
+        "l.aria": "A step goes from pending to running when every dependency has succeeded, or to skipped when one failed. Running goes to succeeded when the owner writes a result, or to failed when the runner raises or times out. Failed can return to running via a bounded retry and skipped via a replan. Succeeded is terminal.",
+        "l.head1": "every write goes through this table, so the log can never contain a step that went backwards",
+        "l.head2": "succeeded is the only terminal state — nothing un-succeeds a step, including a replan",
+        "l.deps": "all deps succeeded",
+        "l.owner": "owner wrote a result",
+        "l.raised": "raised or timed out",
+        "l.retry": "retry — bounded, with backoff",
+        "l.depfail": "a dep failed",
+        "l.replan": "a replan unblocked it",
+        "l.terminal": "terminal",
+        "z.title": "The four zones of a session",
+        "z.aria": "A session has four directories with different trust. Uploads belong to the user, artifacts are written by the engine, scratch is the agent's own workspace, and control holds the plan, the event log and the cursor — no source ref can name it.",
+        "z.head": "one session on disk · every ref re-checked for containment and re-verified against its checksum, on every use",
+        "z.uploads": "the user's files",
+        "z.artifacts": "execution output",
+        "z.scratch": "the agent's own workspace",
+        "z.control": "plan · event log · cursor",
+        "z.noref": "— no ref can name it —",
+        "z.user": "User",
+        "z.user.v": "uploads a file",
+        "z.engine": "Engine",
+        "z.engine.v": "registers output",
+        "z.agentn": "Agent",
+        "z.agent.v": "reads + writes",
+        "z.reads": "reads",
+        "z.unreachable": "✗ unreachable",
+    },
+    "zh": {
+        "hero.title": "一个把自己推翻重来的关联分析计划",
+        "hero.aria": "计划的第 1 版跑到核验步骤，从产物里读出基因组膨胀因子 2.80，判定模型被混杂。第 2 版把它换成考虑群体结构的计划：祖先主成分和亲缘矩阵之间没有依赖边，被同时派发；校正后的扫描给出 0.95 的膨胀因子。",
+        "hero.goal": "在上传的群体中找出与耐盐性关联的位点。",
+        "hero.steps5": "5 个步骤",
+        "hero.steps9": "9 个步骤",
+        "hero.summary": "基因型质控，逐个位点扫描，再做多重检验校正。",
+        "hero.replanned": "已重新规划：",
+        "hero.reason": "第 1 版 λ = 2.8024 —— 统计量在全基因组范围被抬高，这是群体结构，不是信号。",
+        "hero.card1.eyebrow": "用户原话",
+        "hero.card1.l1": "这个群体里，哪些位点跟耐盐性",
+        "hero.card1.l2": "有关联？",
+        "hero.card1.meta": "120 个样本 · 150 个位点",
+        "hero.card2.eyebrow": "智能体改了什么",
+        "hero.card2.l1": "第一次扫描的算术没有错，",
+        "hero.card2.l2": "错的是模型：祖先来源同时",
+        "hero.card2.l3": "牵动了表型和大部分位点的",
+        "hero.card2.l4": "等位基因频率。",
+        "hero.card2.meta": "λ 2.8024 → 0.9461 · 命中 8 → 3",
+        "step.qc": "基因型质控",
+        "step.assoc1": "关联扫描",
+        "step.correct": "多重检验校正",
+        "step.review": "模型是否校准？",
+        "step.answer": "汇报关联位点",
+        "step.pca": "祖先主成分",
+        "step.kinship": "亲缘关系矩阵",
+        "step.assoc2": "考虑结构的扫描",
+        "step.annotate": "注释命中位点",
+        "n.1": "第 1 版已发布 · 5 个步骤 · 在任何东西开跑之前就已校验",
+        "n.2": "质控 · 进 150 个位点，出 148 个",
+        "n.3": "一次扫描，逐个位点 —— 没有任何可以并行的东西",
+        "n.4": "多重检验校正 · 8 个位点存活",
+        "n.5": "核验：从产物里读出基因组膨胀因子",
+        "n.6": "λ = 2.8024 —— 被抬高的是每一个统计量，不是那 8 个位点。8 个里有 5 个是祖先来源。",
+        "n.7": "第 2 版已发布 · 核验步骤改写的是计划，不是答案",
+        "n.8": "祖先主成分和亲缘矩阵被同时派发 —— 它们之间没有依赖边",
+        "n.9": "扫描等齐了两个父节点 · 是汇聚，不是竞争",
+        "n.10": "多重检验校正",
+        "n.11": "λ = 0.9461 · 3 个位点存活，而且三个都是真的",
+        "k.title": "哪个工具可以完成哪一类步骤",
+        "k.aria": "answer、dynamic、review 三类步骤由智能体自己通过 update_step 写入。capability 和 workflow 只能由 run_capability / run_workflow 写入，它们派发给引擎；对这两类调用 update_step 会被 broker 拒绝。",
+        "k.agent": "智能体",
+        "k.agent.l1": "任意模型",
+        "k.agent.l2": "10 个工具",
+        "k.self": "智能体可以自己写这几类",
+        "k.self.note": "智能体在自己沙箱里亲手做的工作",
+        "k.serv": "这两类只有服务端能写",
+        "k.serv.note": "已注册的、带类型契约的工作单元",
+        "k.out1a": "状态由智能体",
+        "k.out1b": "自己写入",
+        "k.out2a": "状态和产物",
+        "k.out2b": "由引擎写入",
+        "k.refused": "✗ update_step —— 被拒绝",
+        "k.point": "所以 capability 步骤显示「完成」，就一定对应一次真实发生过的执行",
+        "l.title": "步骤状态的转移表",
+        "l.aria": "依赖全部成功时，步骤从 pending 进入 running；有依赖失败则进入 skipped。running 在归属者写下结果时进入 succeeded，在 runner 抛错或超时时进入 failed。failed 可以通过有上限的重试回到 running，skipped 可以通过重新规划回到 running。succeeded 是终态。",
+        "l.head1": "每一次写入都要过这张表，所以日志里不可能出现倒退的步骤",
+        "l.head2": "succeeded 是唯一的终态 —— 没有任何东西能让它退回去，重新规划也不行",
+        "l.deps": "依赖全部成功",
+        "l.owner": "归属者写下了结果",
+        "l.raised": "抛错或超时",
+        "l.retry": "重试 —— 有次数上限，带退避",
+        "l.depfail": "有依赖失败了",
+        "l.replan": "重新规划把它解锁了",
+        "l.terminal": "终态",
+        "z.title": "会话的四个信任区",
+        "z.aria": "一个会话有四个信任级别不同的目录。uploads 属于用户，artifacts 由引擎写入，scratch 是智能体自己的工作区，control 存放计划、事件日志和游标 —— 任何 source ref 都指不到它。",
+        "z.head": "磁盘上的一个会话 · 每次使用都会重新校验路径是否越界，并重新比对校验和",
+        "z.uploads": "用户的文件",
+        "z.artifacts": "执行产生的产物",
+        "z.scratch": "智能体自己的工作区",
+        "z.control": "计划 · 事件日志 · 游标",
+        "z.noref": "—— 任何 ref 都指不到 ——",
+        "z.user": "用户",
+        "z.user.v": "上传文件",
+        "z.engine": "引擎",
+        "z.engine.v": "登记产物",
+        "z.agentn": "智能体",
+        "z.agent.v": "可读可写",
+        "z.reads": "只读",
+        "z.unreachable": "✗ 触及不到",
+    },
+}
+
+
 # ── Shared chrome ───────────────────────────────────────────────────────────
 
-def frame(width: int, height: int, title: str, aria: str) -> list[str]:
+def frame(width: int, height: int, title: str, aria: str, lang: str = "en") -> list[str]:
     """Page, border and font declarations — every figure opens with these."""
     return [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" role="img" aria-label="{esc(aria)}">',
         f"<title>{esc(title)}</title>",
-        FONT_STYLE,
+        FONT_STYLE[lang],
         f'<rect width="{width}" height="{height}" rx="12" fill="{PAPER}"/>',
         f'<rect x="0.5" y="0.5" width="{width - 1}" height="{height - 1}" rx="11.5" '
         f'fill="none" stroke="{HAIRLINE}"/>',
@@ -243,20 +445,20 @@ DUR = 18.0
 SWAP = 9.6          # the moment revision 2 is published
 
 R1_STEPS = {
-    "qc":      {"id": "qc", "title": "Quality control", "kind": "capability", "capability": "gwas.qc"},
-    "assoc":   {"id": "assoc", "title": "Association scan", "kind": "capability", "capability": "gwas.associate"},
-    "correct": {"id": "correct", "title": "Multiple testing", "kind": "capability", "capability": "gwas.correct"},
-    "review":  {"id": "review", "title": "Is the model calibrated?", "kind": "review", "capability": None},
-    "answer":  {"id": "answer", "title": "Report the loci", "kind": "answer", "capability": None},
+    "qc":      {"id": "qc", "title": {k: TEXT[k]["step.qc"] for k in TEXT}, "kind": "capability", "capability": "gwas.qc"},
+    "assoc":   {"id": "assoc", "title": {k: TEXT[k]["step.assoc1"] for k in TEXT}, "kind": "capability", "capability": "gwas.associate"},
+    "correct": {"id": "correct", "title": {k: TEXT[k]["step.correct"] for k in TEXT}, "kind": "capability", "capability": "gwas.correct"},
+    "review":  {"id": "review", "title": {k: TEXT[k]["step.review"] for k in TEXT}, "kind": "review", "capability": None},
+    "answer":  {"id": "answer", "title": {k: TEXT[k]["step.answer"] for k in TEXT}, "kind": "answer", "capability": None},
 }
 
 R2_STEPS = {
-    "qc":       {"id": "qc", "title": "Quality control", "kind": "capability", "capability": "gwas.qc"},
-    "pca":      {"id": "pca", "title": "Ancestry axes", "kind": "capability", "capability": "gwas.pca"},
-    "kinship":  {"id": "kinship", "title": "Relatedness matrix", "kind": "capability", "capability": "gwas.kinship"},
-    "assoc":    {"id": "assoc", "title": "Structure-aware scan", "kind": "capability", "capability": "gwas.associate"},
-    "correct":  {"id": "correct", "title": "Multiple testing", "kind": "capability", "capability": "gwas.correct"},
-    "annotate": {"id": "annotate", "title": "Annotate the hits", "kind": "capability", "capability": "gwas.annotate"},
+    "qc":       {"id": "qc", "title": {k: TEXT[k]["step.qc"] for k in TEXT}, "kind": "capability", "capability": "gwas.qc"},
+    "pca":      {"id": "pca", "title": {k: TEXT[k]["step.pca"] for k in TEXT}, "kind": "capability", "capability": "gwas.pca"},
+    "kinship":  {"id": "kinship", "title": {k: TEXT[k]["step.kinship"] for k in TEXT}, "kind": "capability", "capability": "gwas.kinship"},
+    "assoc":    {"id": "assoc", "title": {k: TEXT[k]["step.assoc2"] for k in TEXT}, "kind": "capability", "capability": "gwas.associate"},
+    "correct":  {"id": "correct", "title": {k: TEXT[k]["step.correct"] for k in TEXT}, "kind": "capability", "capability": "gwas.correct"},
+    "annotate": {"id": "annotate", "title": {k: TEXT[k]["step.annotate"] for k in TEXT}, "kind": "capability", "capability": "gwas.annotate"},
 }
 
 R1_TRACKS = {
@@ -276,22 +478,25 @@ R2_TRACKS = {
     "annotate": [(0, "pending"), (SWAP + 7.6, "running"), (SWAP + 8.2, "succeeded")],
 }
 
-NARRATION = [
-    (0.0, 1.0, ACCENT, "revision 1 published · 5 steps · validated before anything ran"),
-    (1.0, 2.9, RUN, "quality control · 150 markers in, 148 out"),
-    (2.9, 5.1, RUN, "one scan, one marker at a time — nothing to run in parallel"),
-    (5.1, 6.9, RUN, "correcting for multiple testing · 8 markers survive"),
-    (6.9, 8.2, RUN, "review: reading the genomic inflation factor off the artifact"),
-    (8.2, SWAP, ERR, "λ = 2.8024 — every statistic is inflated, not eight loci. 5 of the 8 are ancestry."),
-    (SWAP, SWAP + 1.7, ACCENT, "revision 2 published · the review step rewrote the plan, not the answer"),
-    (SWAP + 1.7, SWAP + 4.4, RUN, "ancestry and relatedness dispatched together — no edge between them"),
-    (SWAP + 4.4, SWAP + 6.3, RUN, "the scan waited for both parents · fan-in, not a race"),
-    (SWAP + 6.3, SWAP + 7.3, RUN, "correcting for multiple testing"),
-    (SWAP + 7.3, DUR, OK, "λ = 0.9461 · 3 markers survive, and all three are real"),
-]
+def narration(t: dict) -> list[tuple[float, float, str, str]]:
+    """Windows are shared across languages; only the words change."""
+    return [
+        (0.0, 1.0, ACCENT, t["n.1"]),
+        (1.0, 2.9, RUN, t["n.2"]),
+        (2.9, 5.1, RUN, t["n.3"]),
+        (5.1, 6.9, RUN, t["n.4"]),
+        (6.9, 8.2, RUN, t["n.5"]),
+        (8.2, SWAP, ERR, t["n.6"]),
+        (SWAP, SWAP + 1.7, ACCENT, t["n.7"]),
+        (SWAP + 1.7, SWAP + 4.4, RUN, t["n.8"]),
+        (SWAP + 4.4, SWAP + 6.3, RUN, t["n.9"]),
+        (SWAP + 6.3, SWAP + 7.3, RUN, t["n.10"]),
+        (SWAP + 7.3, DUR, OK, t["n.11"]),
+    ]
 
 
-def hero() -> str:
+def hero(lang: str = "en") -> str:
+    t = TEXT[lang]
     header_h, reason_h = 62, 36
     top = header_h + reason_h
     graph_y = top + 20
@@ -336,7 +541,7 @@ def hero() -> str:
                     *([(entries["succeeded"], "done")] if "succeeded" in entries else [])]
 
         body = [edge_svg(bottom(a), top_of(b), tone(b), DUR) for a, b in edges]
-        body += [node_svg(*pos[key], steps[key], tracks[key], DUR) for key in steps]
+        body += [node_svg(*pos[key], steps[key], tracks[key], DUR, lang) for key in steps]
 
         times = [0.0, visible_from, visible_to] if visible_from > 0 else [0.0, visible_to]
         values = ["0", "1", "0"] if visible_from > 0 else ["1", "0"]
@@ -349,22 +554,19 @@ def hero() -> str:
 
     out = frame(
         width, height,
-        "An association plan replacing itself",
-        "Revision 1 of an association plan runs to a review step, which reads a genomic "
-        "inflation factor of 2.80 off the artifact and concludes the model is confounded. "
-        "Revision 2 replaces it with a structure-aware plan in which ancestry axes and a "
-        "relatedness matrix are dispatched together, and the corrected scan returns a "
-        "calibrated inflation factor of 0.95.",
+        t["hero.title"],
+        t["hero.aria"],
+        lang,
     )
 
     # Header chrome
     out += [
         f'<rect x="1" y="1" width="{width - 2}" height="{header_h}" fill="{SURFACE}"/>',
         f'<line x1="0" y1="{header_h}" x2="{width}" y2="{header_h}" stroke="{HAIRLINE}"/>',
-        heading(20, 48, "Find markers associated with salt tolerance in the uploaded cohort."),
+        heading(20, 48, t["hero.goal"]),
     ]
     # Badge + step count flip at the swap.
-    for label, count, start, end in (("R1", "5 steps", 0.0, SWAP), ("R2", "9 steps", SWAP, DUR)):
+    for label, count, start, end in (("R1", t["hero.steps5"], 0.0, SWAP), ("R2", t["hero.steps9"], SWAP, DUR)):
         times = [0.0, start, end] if start > 0 else [0.0, end]
         values = ["0", "1", "0"] if start > 0 else ["1", "0"]
         if end >= DUR:
@@ -397,12 +599,11 @@ def hero() -> str:
         f'<line x1="0" y1="{top}" x2="{width}" y2="{top}" stroke="{HAIRLINE}"/>',
         f'<text x="20" y="{header_h + 23}" class="s" font-size="11" fill="{INK2}" opacity="1">'
         f'{keyed("opacity", ["1", "0"], [0.0, SWAP], DUR)}'
-        f'QC the genotypes, scan every marker, correct for multiple testing.</text>',
+        f'{esc(t["hero.summary"])}</text>',
         f'<text x="20" y="{header_h + 23}" class="s" font-size="11" fill="{INK2}" opacity="0">'
         f'{keyed("opacity", ["0", "1"], [0.0, SWAP], DUR)}'
-        f'<tspan font-weight="600" fill="{ACCENT}">Replanned: </tspan>'
-        f'λ = 2.8024 in revision 1 — the statistics are inflated genome-wide, which is '
-        f'population structure rather than signal.</text>',
+        f'<tspan font-weight="600" fill="{ACCENT}">{esc(t["hero.replanned"])}</tspan>'
+        f'{esc(t["hero.reason"])}</text>',
     ]
 
     # Graph pane
@@ -417,25 +618,25 @@ def hero() -> str:
     card_y = top + 34
     out += [
         panel(20, card_y, 272, 84),
-        eyebrow(36, card_y + 22, "WHAT THE USER ASKED", INK3),
-        caption(36, card_y + 42, "Which markers are associated with salt", INK, 11, mono=False),
-        caption(36, card_y + 58, "tolerance in this cohort?", INK, 11, mono=False),
-        caption(36, card_y + 74, "120 samples · 150 markers", INK3, 9.5),
+        eyebrow(36, card_y + 22, t["hero.card1.eyebrow"], INK3),
+        caption(36, card_y + 42, t["hero.card1.l1"], INK, 11, mono=False),
+        caption(36, card_y + 58, t["hero.card1.l2"], INK, 11, mono=False),
+        caption(36, card_y + 74, t["hero.card1.meta"], INK3, 9.5),
     ]
     # The second card only exists after the replan — it is the agent's reason.
     finding_y = card_y + 104
     out.append(
         f'<g opacity="0">{keyed("opacity", ["0", "1"], [0.0, SWAP], DUR)}'
         + panel(20, finding_y, 272, 132, stroke=ACCENT, fill="#fffaf3")
-        + eyebrow(36, finding_y + 22, "WHAT THE AGENT CHANGED", ACCENT)
+        + eyebrow(36, finding_y + 22, t["hero.card2.eyebrow"], ACCENT)
         + f'<rect x="204" y="{finding_y + 10}" width="26" height="15" rx="5" fill="{ACCENT_WASH}"/>'
         + f'<text x="217" y="{finding_y + 21}" class="m" font-size="9" font-weight="700" '
           f'fill="{ACCENT}" text-anchor="middle">R2</text>'
-        + caption(36, finding_y + 44, "The first scan was not wrong about the", INK2, 11, mono=False)
-        + caption(36, finding_y + 60, "arithmetic. It was wrong about the model:", INK2, 11, mono=False)
-        + caption(36, finding_y + 76, "ancestry moves the phenotype and most", INK2, 11, mono=False)
-        + caption(36, finding_y + 92, "allele frequencies at once.", INK2, 11, mono=False)
-        + caption(36, finding_y + 116, "λ 2.8024 → 0.9461 · 8 hits → 3", ACCENT, 9.5)
+        + caption(36, finding_y + 44, t["hero.card2.l1"], INK2, 11, mono=False)
+        + caption(36, finding_y + 60, t["hero.card2.l2"], INK2, 11, mono=False)
+        + caption(36, finding_y + 76, t["hero.card2.l3"], INK2, 11, mono=False)
+        + caption(36, finding_y + 92, t["hero.card2.l4"], INK2, 11, mono=False)
+        + caption(36, finding_y + 116, t["hero.card2.meta"], ACCENT, 9.5)
         + "</g>"
     )
 
@@ -443,7 +644,7 @@ def hero() -> str:
     out.append(revision_group(R2_STEPS, r2_pos, r2_edges, R2_TRACKS, SWAP, DUR))
 
     narration_y = height - 18
-    for start, end, colour, text in NARRATION:
+    for start, end, colour, text in narration(t):
         times = [0.0, start, end] if start > 0 else [0.0, end]
         values = ["0", "1", "0"] if start > 0 else ["1", "0"]
         if end >= DUR:
@@ -462,30 +663,29 @@ def hero() -> str:
 #  Figure 2 — kind decides who may write the step
 # ════════════════════════════════════════════════════════════════════════════
 
-def step_kinds() -> str:
+def step_kinds(lang: str = "en") -> str:
+    t = TEXT[lang]
     width, height = 820, 322
     out = frame(
         width, height,
-        "Which tool may complete which kind of step",
-        "The agent completes answer, dynamic and review steps itself through update_step. "
-        "Capability and workflow steps are written only by run_capability and run_workflow, "
-        "which dispatch to the engine; update_step against those kinds is refused by the "
-        "broker.",
+        t["k.title"],
+        t["k.aria"],
+        lang,
     )
 
     out += [
         panel(24, 108, 150, 76, stroke=ACCENT, fill="#f6f9f7"),
         f'<rect x="24" y="108" width="4" height="76" rx="2" fill="{ACCENT}"/>',
-        heading(44, 138, "Agent"),
-        caption(44, 156, "any model", INK3, 9.5),
-        caption(44, 172, "10 tools", INK3, 9.5),
+        heading(44, 138, t["k.agent"]),
+        caption(44, 156, t["k.agent.l1"], INK3, 9.5),
+        caption(44, 172, t["k.agent.l2"], INK3, 9.5),
     ]
 
     # ── Upper lane: what the agent may close itself ──────────────────────────
     out += [
         panel(296, 34, 312, 96, stroke=ACCENT, fill="#f6f9f7"),
-        eyebrow(314, 58, "THE AGENT MAY WRITE THESE", ACCENT),
-        caption(314, 118, "work the agent did itself, in its own sandbox", INK3, 9.5),
+        eyebrow(314, 58, t["k.self"], ACCENT),
+        caption(314, 118, t["k.self.note"], INK3, 9.5),
     ]
     for index, kind in enumerate(("answer", "dynamic", "review")):
         out.append(pill(314 + index * 96, 70, 88, 26, kind, ACCENT, SURFACE, ACCENT))
@@ -494,15 +694,15 @@ def step_kinds() -> str:
         arrow(174, 130, 288, 86, ACCENT, 1.8, curve=10),
         caption(190, 100, "update_step", ACCENT, 9.5),
         arrow(614, 82, 668, 82, EDGE, 1.6),
-        caption(678, 78, "status written", INK3, 9.5),
-        caption(678, 92, "by the agent", INK3, 9.5),
+        caption(678, 78, t["k.out1a"], INK3, 9.5),
+        caption(678, 92, t["k.out1b"], INK3, 9.5),
     ]
 
     # ── Lower lane: what only the server may close ───────────────────────────
     out += [
         panel(296, 164, 312, 96, stroke=RUN, fill="#f4f8fc"),
-        eyebrow(314, 188, "ONLY THE SERVER WRITES THESE", RUN),
-        caption(314, 248, "registered, typed units of work", INK3, 9.5),
+        eyebrow(314, 188, t["k.serv"], RUN),
+        caption(314, 248, t["k.serv.note"], INK3, 9.5),
     ]
     for index, kind in enumerate(("capability", "workflow")):
         out.append(pill(314 + index * 114, 200, 104, 26, kind, RUN, SURFACE, RUN))
@@ -512,8 +712,8 @@ def step_kinds() -> str:
         caption(184, 196, "run_capability", RUN, 9.5),
         caption(184, 209, "run_workflow", RUN, 9.5),
         arrow(614, 212, 668, 212, EDGE, 1.6),
-        caption(678, 208, "status + artifacts", INK3, 9.5),
-        caption(678, 222, "written by the engine", INK3, 9.5),
+        caption(678, 208, t["k.out2a"], INK3, 9.5),
+        caption(678, 222, t["k.out2b"], INK3, 9.5),
     ]
 
     # ── The refusal, which is the whole point ────────────────────────────────
@@ -523,8 +723,7 @@ def step_kinds() -> str:
         f'stroke="{ERR}" stroke-width="1.2"/>',
         f'<text x="241" y="291" class="m" font-size="10" font-weight="600" fill="{ERR}" '
         f'text-anchor="middle">✗ update_step — refused</text>',
-        caption(344, 291, "so a capability step reading \"succeeded\" is always a run "
-                          "that really happened", INK3, 9.5),
+        caption(344, 291, t["k.point"], INK3, 9.5),
     ]
     out.append("</svg>")
     return "\n".join(out)
@@ -534,16 +733,15 @@ def step_kinds() -> str:
 #  Figure 3 — the step transition table, as a machine
 # ════════════════════════════════════════════════════════════════════════════
 
-def step_lifecycle() -> str:
+def step_lifecycle(lang: str = "en") -> str:
     """Explicit coordinates throughout: derived midpoints put labels inside boxes."""
+    t = TEXT[lang]
     width, height = 820, 300
     out = frame(
         width, height,
-        "The step status transition table",
-        "A step goes from pending to running when every dependency has succeeded, or to "
-        "skipped when one failed. Running goes to succeeded when the owner writes a result, "
-        "or to failed when the runner raises or times out. Failed can return to running via "
-        "a bounded retry and skipped via a replan. Succeeded is terminal.",
+        t["l.title"],
+        t["l.aria"],
+        lang,
     )
 
     w, h = 128, 34
@@ -557,10 +755,8 @@ def step_lifecycle() -> str:
     WARN = "#a8864b"
 
     out += [
-        caption(24, 34, "every write goes through this table, so the log can never contain "
-                        "a step that went backwards", INK3, 10),
-        caption(24, 52, "succeeded is the only terminal state — nothing un-succeeds a step, "
-                        "including a replan", OK, 10),
+        caption(24, 34, t["l.head1"], INK3, 10),
+        caption(24, 52, t["l.head2"], OK, 10),
     ]
 
     # Entry
@@ -572,15 +768,15 @@ def step_lifecycle() -> str:
     # pending → running, label lifted clear of both boxes
     out += [
         arrow(218, 137, 304, 137, RUN, 1.6),
-        caption(261, 110, "all deps succeeded", RUN, 9.5, anchor="middle"),
+        caption(261, 110, t["l.deps"], RUN, 9.5, anchor="middle"),
     ]
 
     # running → succeeded / failed
     out += [
         arrow(438, 130, 554, 84, OK, 1.6, curve=8),
-        caption(470, 102, "owner wrote a result", OK, 9.5, anchor="middle"),
+        caption(470, 102, t["l.owner"], OK, 9.5, anchor="middle"),
         arrow(438, 144, 554, 190, ERR, 1.6, curve=-8),
-        caption(468, 192, "raised or timed out", ERR, 9.5, anchor="middle"),
+        caption(468, 192, t["l.raised"], ERR, 9.5, anchor="middle"),
     ]
 
     # failed → running: routed below both, so it crosses nothing
@@ -588,15 +784,15 @@ def step_lifecycle() -> str:
         f'<path d="M600,210 Q600,262 500,262 L432,262 Q378,262 378,164" fill="none" '
         f'stroke="{WARN}" stroke-width="1.5" stroke-linecap="round"/>',
         f'<path d="M373.6,164 L378,156 L382.4,164 Z" fill="{WARN}"/>',
-        caption(500, 276, "retry — bounded, with backoff", WARN, 9.5, anchor="middle"),
+        caption(500, 276, t["l.retry"], WARN, 9.5, anchor="middle"),
     ]
 
     # pending → skipped, and skipped back into flight after a replan
     out += [
         arrow(154, 154, 154, 226, "#b9b0a0", 1.5),
-        caption(164, 194, "a dep failed", "#b9b0a0", 9.5),
+        caption(164, 194, t["l.depfail"], "#b9b0a0", 9.5),
         arrow(218, 243, 330, 160, ACCENT, 1.5, dashed=True, curve=14),
-        caption(238, 224, "a replan unblocked it", ACCENT, 9.5),
+        caption(238, 224, t["l.replan"], ACCENT, 9.5),
     ]
 
     for name, (x, y, stroke, fill) in boxes.items():
@@ -610,7 +806,7 @@ def step_lifecycle() -> str:
         arrow(688, 81, 712, 81, EDGE, 1.5),
         f'<circle cx="726" cy="81" r="7" fill="none" stroke="{INK3}" stroke-width="1.5"/>',
         f'<circle cx="726" cy="81" r="3.5" fill="{INK3}"/>',
-        caption(740, 85, "terminal", INK3, 9.5),
+        caption(740, 85, t["l.terminal"], INK3, 9.5),
     ]
     out.append("</svg>")
     return "\n".join(out)
@@ -620,25 +816,24 @@ def step_lifecycle() -> str:
 #  Figure 4 — the four zones of a session
 # ════════════════════════════════════════════════════════════════════════════
 
-def session_zones() -> str:
+def session_zones(lang: str = "en") -> str:
+    t = TEXT[lang]
     width, height = 820, 306
     out = frame(
         width, height,
-        "The four zones of a session",
-        "A session has four directories with different trust. Uploads belong to the user, "
-        "artifacts are written by the engine, scratch is the agent's own workspace, and "
-        "control holds the plan, the event log and the cursor — no source ref can name it.",
+        t["z.title"],
+        t["z.aria"],
+        lang,
     )
 
-    out.append(caption(24, 34, "one session on disk · every ref re-checked for containment "
-                               "and re-verified against its checksum, on every use", INK3, 10))
+    out.append(caption(24, 34, t["z.head"], INK3, 10))
 
     zone_x, zone_w = 300, 400
     rows = [
-        ("uploads/", "upload:<id>", "the user's files", ACCENT, "#f6f9f7", 58),
-        ("artifacts/", "artifact:<id>", "execution output", RUN, "#f4f8fc", 116),
-        ("scratch/", "scratch:<path>", "the agent's own workspace", "#6d5bb5", "#f7f5fb", 174),
-        ("control/", "— no ref can name it —", "plan · event log · cursor", ERR, "#fdf6f5", 232),
+        ("uploads/", "upload:<id>", t["z.uploads"], ACCENT, "#f6f9f7", 58),
+        ("artifacts/", "artifact:<id>", t["z.artifacts"], RUN, "#f4f8fc", 116),
+        ("scratch/", "scratch:<path>", t["z.scratch"], "#6d5bb5", "#f7f5fb", 174),
+        ("control/", t["z.noref"], t["z.control"], ERR, "#fdf6f5", 232),
     ]
     out.append(panel(zone_x - 16, 44, zone_w + 32, 234, stroke=HAIRLINE, fill=SUNKEN, radius=14))
 
@@ -654,9 +849,9 @@ def session_zones() -> str:
         ]
 
     actors = [
-        ("User", 58, ACCENT, "uploads a file", 0),
-        ("Engine", 116, RUN, "registers output", 1),
-        ("Agent", 174, "#6d5bb5", "reads + writes", 2),
+        (t["z.user"], 58, ACCENT, t["z.user.v"], 0),
+        (t["z.engine"], 116, RUN, t["z.engine.v"], 1),
+        (t["k.agent"], 174, "#6d5bb5", t["z.agent.v"], 2),
     ]
     for name, y, colour, verb, _ in actors:
         out += [
@@ -671,7 +866,7 @@ def session_zones() -> str:
     out += [
         arrow(136, 190, zone_x - 22, 76, "#6d5bb5", 1.3, curve=26),
         arrow(136, 186, zone_x - 22, 134, "#6d5bb5", 1.3, curve=14),
-        caption(196, 108, "reads", "#6d5bb5", 9),
+        caption(196, 108, t["z.reads"], "#6d5bb5", 9),
         arrow(136, 208, zone_x - 22, 250, ERR, 1.5, dashed=True, curve=-14),
         f'<rect x="150" y="264" width="128" height="22" rx="11" fill="{SURFACE}" '
         f'stroke="{ERR}" stroke-width="1.2"/>',
@@ -690,6 +885,8 @@ if __name__ == "__main__":
         ("step-lifecycle", step_lifecycle),
         ("session-zones", session_zones),
     ):
-        target = here / f"{name}.svg"
-        target.write_text(builder())
-        print(f"wrote {target.name} ({target.stat().st_size:,} bytes)")
+        for lang in TEXT:
+            suffix = "" if lang == "en" else f".{lang}"
+            target = here / f"{name}{suffix}.svg"
+            target.write_text(builder(lang))
+            print(f"wrote {target.name} ({target.stat().st_size:,} bytes)")

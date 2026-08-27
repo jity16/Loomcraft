@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="322" viewBox="0 0 820 322" role="img" aria-label="answer、dynamic、review 三类步骤由智能体自己通过 update_step 写入。capability 和 workflow 只能由 run_capability / run_workflow 写入，它们派发给引擎；对这两类调用 update_step 会被 broker 拒绝。">
+<title>哪个工具可以完成哪一类步骤</title>
+<style>
+  .s { font-family: "Inter", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+  .m { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", monospace; }
+</style>
+<rect width="820" height="322" rx="12" fill="#fdfcf8"/>
+<rect x="0.5" y="0.5" width="819" height="321" rx="11.5" fill="none" stroke="#efece3"/>
+<rect x="24" y="108" width="150" height="76" rx="12" fill="#f6f9f7" stroke="#4a7d5b" stroke-width="1.3"/>
+<rect x="24" y="108" width="4" height="76" rx="2" fill="#4a7d5b"/>
+<text x="44" y="138" class="s" font-size="12.5" font-weight="600" fill="#1a2332">智能体</text>
+<text x="44" y="156" class="m" font-size="9.5" fill="#687181" text-anchor="start">任意模型</text>
+<text x="44" y="172" class="m" font-size="9.5" fill="#687181" text-anchor="start">10 个工具</text>
+<rect x="296" y="34" width="312" height="96" rx="12" fill="#f6f9f7" stroke="#4a7d5b" stroke-width="1.3"/>
+<text x="314" y="58" class="s" font-size="9.5" font-weight="600" fill="#4a7d5b" letter-spacing="0.7">智能体可以自己写这几类</text>
+<text x="314" y="118" class="m" font-size="9.5" fill="#687181" text-anchor="start">智能体在自己沙箱里亲手做的工作</text>
+<rect x="314" y="70" width="88" height="26" rx="13" fill="#ffffff" stroke="#4a7d5b" stroke-width="1.4"/><text x="358" y="87" class="m" font-size="11.5" font-weight="600" fill="#4a7d5b" text-anchor="middle">answer</text>
+<rect x="410" y="70" width="88" height="26" rx="13" fill="#ffffff" stroke="#4a7d5b" stroke-width="1.4"/><text x="454" y="87" class="m" font-size="11.5" font-weight="600" fill="#4a7d5b" text-anchor="middle">dynamic</text>
+<rect x="506" y="70" width="88" height="26" rx="13" fill="#ffffff" stroke="#4a7d5b" stroke-width="1.4"/><text x="550" y="87" class="m" font-size="11.5" font-weight="600" fill="#4a7d5b" text-anchor="middle">review</text>
+<path d="M174.0,130.0 Q234.6,117.3 280.5,88.9" fill="none" stroke="#4a7d5b" stroke-width="1.8" stroke-linecap="round"/><path d="M282.1,93.0 L288.0,86.0 L279.0,84.8 Z" fill="#4a7d5b"/>
+<text x="190" y="100" class="m" font-size="9.5" fill="#4a7d5b" text-anchor="start">update_step</text>
+<path d="M614.0,82.0 L660.0,82.0" fill="none" stroke="#9aa2af" stroke-width="1.6" stroke-linecap="round"/><path d="M660.0,86.4 L668.0,82.0 L660.0,77.6 Z" fill="#9aa2af"/>
+<text x="678" y="78" class="m" font-size="9.5" fill="#687181" text-anchor="start">状态由智能体</text>
+<text x="678" y="92" class="m" font-size="9.5" fill="#687181" text-anchor="start">自己写入</text>
+<rect x="296" y="164" width="312" height="96" rx="12" fill="#f4f8fc" stroke="#1661ab" stroke-width="1.3"/>
+<text x="314" y="188" class="s" font-size="9.5" font-weight="600" fill="#1661ab" letter-spacing="0.7">这两类只有服务端能写</text>
+<text x="314" y="248" class="m" font-size="9.5" fill="#687181" text-anchor="start">已注册的、带类型契约的工作单元</text>
+<rect x="314" y="200" width="104" height="26" rx="13" fill="#ffffff" stroke="#1661ab" stroke-width="1.4"/><text x="366" y="217" class="m" font-size="11.5" font-weight="600" fill="#1661ab" text-anchor="middle">capability</text>
+<rect x="428" y="200" width="104" height="26" rx="13" fill="#ffffff" stroke="#1661ab" stroke-width="1.4"/><text x="480" y="217" class="m" font-size="11.5" font-weight="600" fill="#1661ab" text-anchor="middle">workflow</text>
+<path d="M174.0,162.0 Q234.3,172.6 280.5,199.4" fill="none" stroke="#1661ab" stroke-width="1.8" stroke-linecap="round"/><path d="M279.0,203.5 L288.0,202.0 L281.9,195.2 Z" fill="#1661ab"/>
+<text x="184" y="196" class="m" font-size="9.5" fill="#1661ab" text-anchor="start">run_capability</text>
+<text x="184" y="209" class="m" font-size="9.5" fill="#1661ab" text-anchor="start">run_workflow</text>
+<path d="M614.0,212.0 L660.0,212.0" fill="none" stroke="#9aa2af" stroke-width="1.6" stroke-linecap="round"/><path d="M660.0,216.4 L668.0,212.0 L660.0,207.6 Z" fill="#9aa2af"/>
+<text x="678" y="208" class="m" font-size="9.5" fill="#687181" text-anchor="start">状态和产物</text>
+<text x="678" y="222" class="m" font-size="9.5" fill="#687181" text-anchor="start">由引擎写入</text>
+<path d="M150.0,194.0 Q225.6,218.7 280.9,264.2" fill="none" stroke="#c03030" stroke-width="1.6" stroke-linecap="round" stroke-dasharray="5 4"/><path d="M278.9,268.1 L288.0,268.0 L283.0,260.3 Z" fill="#c03030"/>
+<rect x="150" y="276" width="182" height="22" rx="11" fill="#ffffff" stroke="#c03030" stroke-width="1.2"/>
+<text x="241" y="291" class="m" font-size="10" font-weight="600" fill="#c03030" text-anchor="middle">✗ update_step — refused</text>
+<text x="344" y="291" class="m" font-size="9.5" fill="#687181" text-anchor="start">所以 capability 步骤显示「完成」，就一定对应一次真实发生过的执行</text>
+</svg>

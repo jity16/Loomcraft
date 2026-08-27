@@ -7,6 +7,8 @@
 The agent writes the graph. The server proves it is safe. The engine runs it.
 The UI draws it — live.
 
+**English** · [简体中文](README.zh-CN.md)
+
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-38bdf8?style=flat-square&logo=python&logoColor=white&labelColor=0b1120)](packages/core/pyproject.toml)
 [![React 18+](https://img.shields.io/badge/react-18+-a78bfa?style=flat-square&logo=react&logoColor=white&labelColor=0b1120)](packages/renderer/package.json)
 [![core deps: pydantic only](https://img.shields.io/badge/core%20deps-pydantic%20only-fbbf24?style=flat-square&labelColor=0b1120)](packages/core/pyproject.toml)
