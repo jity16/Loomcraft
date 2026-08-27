@@ -22,7 +22,9 @@ The UI draws it — live.
 
 <sub>The workbench, drawn with the tokens <code>@loomcraft/renderer</code> ships — and a real plan,
 from <a href="examples/01-gwas-discovery/">example 1</a>.<br>
-Revision <b>2</b>, because revision 1 was confounded and the agent noticed: λ = 2.80 → 0.95, eight hits → three.</sub>
+Revision <b>1</b> runs, its own <code>review</code> step reads λ = 2.80 off the artifact, and the agent replaces
+the plan.<br>Revision <b>2</b> adds the two steps it was missing — and they have no edge between them, so the
+engine runs both at once.</sub>
 
 </div>
 
@@ -195,61 +197,24 @@ Kind decides *who is allowed to complete the step* — the important half.
 | `review` | Explicit verification of produced artifacts | the agent, via `update_step` |
 | `answer` | Composing the final reply | the agent, via `update_step` |
 
-```mermaid
-flowchart LR
-    A(["Agent"]):::agent
+<div align="center">
+<img src="assets/step-kinds.svg" width="820"
+     alt="The agent completes answer, dynamic and review steps itself through update_step. Capability and workflow steps are written only by run_capability and run_workflow, which dispatch to the engine; update_step against those kinds is refused by the broker.">
+</div>
 
-    A -- "update_step" --> AK["<b>answer</b> · <b>dynamic</b> · <b>review</b><br/><i>work the agent did itself</i>"]:::selfwrite
-    A -- "run_capability<br/>run_workflow" --> SK["<b>capability</b> · <b>workflow</b><br/><i>registered units of work</i>"]:::servwrite
-    A -. "update_step — refused" .-> SK
-
-    SK --> ENG(["Engine"]):::engine
-    ENG -- "status + artifacts" --> LOG[("Event log")]:::log
-    AK -- "status" --> LOG
-
-    classDef agent     fill:#f6f3fb,stroke:#6d5bb5,stroke-width:2px,color:#1a2332
-    classDef selfwrite fill:#ffffff,stroke:#6d5bb5,stroke-width:1.5px,color:#1a2332
-    classDef servwrite fill:#eef4fa,stroke:#1661ab,stroke-width:1.5px,color:#1a2332
-    classDef engine    fill:#fbf6e9,stroke:#a8864b,stroke-width:2px,color:#1a2332
-    classDef log       fill:#f0f6ef,stroke:#4a7d5b,stroke-width:2px,color:#1a2332
-
-    linkStyle 2 stroke:#c03030,color:#c03030
-```
-
-The dotted edge is the whole point: an agent can *ask* to mark a `capability`
-step done, and the broker refuses. A `capability` step reading `succeeded`
-therefore always corresponds to a run that really happened.
+The red dashed arrow is the whole point: an agent can *ask* to mark a
+`capability` step done, and the broker refuses. A `capability` step reading
+`succeeded` therefore always corresponds to a run that really happened.
 
 ### Step lifecycle
 
 Statuses are not free-form strings — every write goes through a transition table,
 so the log can never contain a step that went backwards.
 
-```mermaid
-stateDiagram-v2
-    direction LR
-
-    [*] --> pending
-    pending   --> running   : all deps succeeded
-    pending   --> skipped   : a dep failed
-    running   --> succeeded : the owner wrote a result
-    running   --> failed    : raised or timed out
-    failed    --> running   : retry, with backoff
-    skipped   --> running   : a replan unblocked it
-    succeeded --> [*]
-
-    classDef pend fill:#ffffff,stroke:#9aa2af,stroke-width:1.5px,color:#1a2332
-    classDef run  fill:#eef4fa,stroke:#1661ab,stroke-width:2px,color:#1a2332
-    classDef ok   fill:#f2f4e9,stroke:#6b7a3a,stroke-width:2px,color:#1a2332
-    classDef bad  fill:#faeceb,stroke:#c03030,stroke-width:2px,color:#1a2332
-    classDef skip fill:#f7f4ec,stroke:#b9b0a0,stroke-width:1.5px,color:#1a2332
-
-    class pending pend
-    class running run
-    class succeeded ok
-    class failed bad
-    class skipped skip
-```
+<div align="center">
+<img src="assets/step-lifecycle.svg" width="820"
+     alt="A step goes from pending to running when every dependency has succeeded, or to skipped when one failed. Running goes to succeeded when the owner writes a result, or to failed when the runner raises or times out. Failed can return to running via a bounded retry and skipped via a replan. Succeeded is terminal.">
+</div>
 
 `succeeded` is terminal — nothing can un-succeed a step, including a replan.
 `failed` and `skipped` are not: a retry or a higher revision may put them back
@@ -263,8 +228,8 @@ contract is data, the *same* declaration produces the agent-facing JSON Schema,
 the server-side validation, and the execution graph — they cannot drift apart.
 
 Input **variants** let one capability accept alternatives without accepting
-nonsense: `input_variants=(("bed", "bim"), ("vcf",))` means a PLINK pair *or* a
-VCF, never half of each.
+nonsense: `input_variants=(("bed", "bim", "fam"), ("vcf",))` means a PLINK
+triple *or* a VCF, never half of each.
 
 ### Source refs
 
@@ -274,37 +239,10 @@ integrity checks on every call. A session has four zones with different trust:
 `uploads/` (the user's), `artifacts/` (execution output), `scratch/` (the agent's
 own workspace), `control/` (server-owned, unreachable by the agent).
 
-```mermaid
-flowchart LR
-    USER(["User"]):::user
-    ENG(["Engine"]):::engine
-    AG(["Agent"]):::agent
-
-    USER -- "uploads a file" --> UP
-    ENG  -- "registers output" --> ART
-    AG   -- "reads" --> UP
-    AG   -- "reads" --> ART
-    AG   -- "reads + writes" --> SCR
-    AG   -. "no ref can name it" .-> CTL
-
-    subgraph SESSION["one session on disk"]
-        direction TB
-        UP["<b>uploads/</b><br/><code>upload:id</code>"]:::up
-        ART["<b>artifacts/</b><br/><code>artifact:id</code>"]:::art
-        SCR["<b>scratch/</b><br/><code>scratch:path</code>"]:::scr
-        CTL["<b>control/</b><br/>plan · event log · cursor"]:::ctl
-    end
-
-    classDef user   fill:#f0f6ef,stroke:#4a7d5b,stroke-width:2px,color:#1a2332
-    classDef agent  fill:#f6f3fb,stroke:#6d5bb5,stroke-width:2px,color:#1a2332
-    classDef engine fill:#3a2c0a,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
-    classDef up     fill:#f0f6ef,stroke:#4a7d5b,stroke-width:1.5px,color:#1a2332
-    classDef art    fill:#eef4fa,stroke:#1661ab,stroke-width:1.5px,color:#1a2332
-    classDef scr    fill:#f6f3fb,stroke:#6d5bb5,stroke-width:1.5px,color:#1a2332
-    classDef ctl    fill:#faeceb,stroke:#c03030,stroke-width:2px,color:#1a2332
-
-    linkStyle 5 stroke:#c03030,color:#c03030
-```
+<div align="center">
+<img src="assets/session-zones.svg" width="820"
+     alt="A session has four directories with different trust. Uploads belong to the user, artifacts are written by the engine, scratch is the agent's own workspace, and control holds the plan, the event log and the cursor — no source ref can name it.">
+</div>
 
 Every arrow above is checked on **every** resolution, not once at registration:
 the path is re-confined to the session (symlinks included) and the recorded

@@ -152,166 +152,305 @@ def edge_svg(a: tuple[int, int], b: tuple[int, int], tone_track: list[tuple[floa
     )
 
 
-# ── The figure ──────────────────────────────────────────────────────────────
+# ── Shared chrome ───────────────────────────────────────────────────────────
 
-DUR = 14.0
-
-STEPS = {
-    "qc":      {"id": "qc", "title": "Quality control", "kind": "capability", "capability": "gwas.qc"},
-    "pca":     {"id": "pca", "title": "Ancestry axes", "kind": "capability", "capability": "gwas.pca"},
-    "kinship": {"id": "kinship", "title": "Relatedness matrix", "kind": "capability", "capability": "gwas.kinship"},
-    "assoc":   {"id": "assoc", "title": "Structure-aware scan", "kind": "capability", "capability": "gwas.associate"},
-    "correct": {"id": "correct", "title": "Multiple testing", "kind": "capability", "capability": "gwas.correct"},
-}
-
-# (start, status) pairs. Everything before the first entry is that first status.
-TRACKS = {
-    "qc":      [(0, "pending"), (1.5, "running"), (3.5, "succeeded")],
-    "pca":     [(0, "pending"), (3.8, "running"), (6.0, "succeeded")],
-    "kinship": [(0, "pending"), (3.8, "running"), (7.0, "succeeded")],
-    "assoc":   [(0, "pending"), (7.3, "running"), (9.6, "succeeded")],
-    "correct": [(0, "pending"), (9.9, "running"), (11.6, "succeeded")],
-}
-
-NARRATION = [
-    (0.0, 1.5, ACCENT, "revision 2 published · 9 steps · validated before anything ran"),
-    (1.5, 3.5, RUN, "quality control running · the only step with no unmet dependency"),
-    (3.5, 6.0, OK, "qc succeeded → ancestry and relatedness dispatched together"),
-    (6.0, 7.3, RUN, "no edge between those two, so the engine did not serialise them"),
-    (7.3, 9.9, RUN, "the scan waited for both parents — fan-in, not a race"),
-    (9.9, 11.6, RUN, "correcting for multiple testing"),
-    (11.6, DUR, OK, "λ = 0.9461 · the null is calibrated and the three hits stand"),
-]
-
-
-def build() -> str:
-    header_h, reason_h = 62, 36
-    top = header_h + reason_h
-    graph_x, graph_y = 316, top + 20
-
-    pos = {
-        "qc":      (graph_x + (2 * NODE_W + LANE_GAP - NODE_W) // 2, graph_y),
-        "pca":     (graph_x, graph_y + NODE_H + LAYER_GAP),
-        "kinship": (graph_x + NODE_W + LANE_GAP, graph_y + NODE_H + LAYER_GAP),
-        "assoc":   (graph_x + (2 * NODE_W + LANE_GAP - NODE_W) // 2, graph_y + 2 * (NODE_H + LAYER_GAP)),
-        "correct": (graph_x + (2 * NODE_W + LANE_GAP - NODE_W) // 2, graph_y + 3 * (NODE_H + LAYER_GAP)),
-    }
-    width = 820
-    height = pos["correct"][1] + NODE_H + 26
-
-    def bottom(key: str) -> tuple[int, int]:
-        x, y = pos[key]
-        return x + NODE_W // 2, y + NODE_H
-
-    def top_of(key: str) -> tuple[int, int]:
-        x, y = pos[key]
-        return x + NODE_W // 2, y
-
-    def tone_track(parent: str, child: str) -> list[tuple[float, str]]:
-        """idle → active while the child runs → done once both have succeeded."""
-        child_run = next(t for t, s in TRACKS[child] if s == "running")
-        child_ok = next(t for t, s in TRACKS[child] if s == "succeeded")
-        return [(0, "idle"), (child_run, "active"), (child_ok, "done")]
-
-    edges = [("qc", "pca"), ("qc", "kinship"), ("pca", "assoc"),
-             ("kinship", "assoc"), ("assoc", "correct")]
-
-    out = [
+def frame(width: int, height: int, title: str, aria: str) -> list[str]:
+    """Page, border and font declarations — every figure opens with these."""
+    return [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-        f'viewBox="0 0 {width} {height}" role="img" aria-label="The LoomCraft workbench '
-        f'rendering revision 2 of an association study: quality control succeeds, ancestry '
-        f'axes and the relatedness matrix are dispatched together because neither depends on '
-        f'the other, the structure-aware scan waits for both, and multiple-testing correction '
-        f'follows.">',
-        "<title>Revision 2 of the association plan, executing</title>",
-        FONT_STYLE + "",
-
-        # Page + chrome
+        f'viewBox="0 0 {width} {height}" role="img" aria-label="{esc(aria)}">',
+        f"<title>{esc(title)}</title>",
+        FONT_STYLE,
         f'<rect width="{width}" height="{height}" rx="12" fill="{PAPER}"/>',
         f'<rect x="0.5" y="0.5" width="{width - 1}" height="{height - 1}" rx="11.5" '
         f'fill="none" stroke="{HAIRLINE}"/>',
+    ]
+
+
+def caption(x: int, y: int, text: str, colour: str = INK3, size: float = 10,
+            anchor: str = "start", mono: bool = True) -> str:
+    cls = "m" if mono else "s"
+    return (
+        f'<text x="{x}" y="{y}" class="{cls}" font-size="{size}" fill="{colour}" '
+        f'text-anchor="{anchor}">{esc(text)}</text>'
+    )
+
+
+def heading(x: int, y: int, text: str, colour: str = INK) -> str:
+    return (
+        f'<text x="{x}" y="{y}" class="s" font-size="12.5" font-weight="600" '
+        f'fill="{colour}">{esc(text)}</text>'
+    )
+
+
+def eyebrow(x: int, y: int, text: str, colour: str) -> str:
+    return (
+        f'<text x="{x}" y="{y}" class="s" font-size="9.5" font-weight="600" '
+        f'fill="{colour}" letter-spacing="0.7">{esc(text)}</text>'
+    )
+
+
+def pill(x: int, y: int, w: int, h: int, text: str, stroke: str, fill: str,
+         ink: str = INK, size: float = 11.5, mono: bool = True) -> str:
+    cls = "m" if mono else "s"
+    return (
+        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{h // 2}" fill="{fill}" '
+        f'stroke="{stroke}" stroke-width="1.4"/>'
+        f'<text x="{x + w // 2}" y="{y + h // 2 + 4}" class="{cls}" font-size="{size}" '
+        f'font-weight="600" fill="{ink}" text-anchor="middle">{esc(text)}</text>'
+    )
+
+
+def arrow(x1: float, y1: float, x2: float, y2: float, colour: str = EDGE,
+          width: float = 1.6, dashed: bool = False, curve: float = 0.0) -> str:
+    """A straight or gently curved arrow with a solid head at the target end."""
+    import math as _math
+
+    dx, dy = x2 - x1, y2 - y1
+    length = _math.hypot(dx, dy) or 1.0
+    ux, uy = dx / length, dy / length
+    tip_x, tip_y = x2, y2
+    base_x, base_y = x2 - ux * 8, y2 - uy * 8
+    px, py = -uy * 4.4, ux * 4.4
+    dash = ' stroke-dasharray="5 4"' if dashed else ""
+    if curve:
+        mx, my = (x1 + x2) / 2 - uy * curve, (y1 + y2) / 2 + ux * curve
+        path = f"M{x1:.1f},{y1:.1f} Q{mx:.1f},{my:.1f} {base_x:.1f},{base_y:.1f}"
+    else:
+        path = f"M{x1:.1f},{y1:.1f} L{base_x:.1f},{base_y:.1f}"
+    return (
+        f'<path d="{path}" fill="none" stroke="{colour}" stroke-width="{width}" '
+        f'stroke-linecap="round"{dash}/>'
+        f'<path d="M{base_x + px:.1f},{base_y + py:.1f} L{tip_x:.1f},{tip_y:.1f} '
+        f'L{base_x - px:.1f},{base_y - py:.1f} Z" fill="{colour}"/>'
+    )
+
+
+def panel(x: int, y: int, w: int, h: int, stroke: str = LINE, fill: str = SURFACE,
+          radius: int = 12, dashed: bool = False) -> str:
+    dash = ' stroke-dasharray="5 5"' if dashed else ""
+    return (
+        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{radius}" fill="{fill}" '
+        f'stroke="{stroke}" stroke-width="1.3"{dash}/>'
+    )
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Figure 1 — the hero: revision 1 runs, is found wanting, and is replaced
+# ════════════════════════════════════════════════════════════════════════════
+
+DUR = 18.0
+SWAP = 9.6          # the moment revision 2 is published
+
+R1_STEPS = {
+    "qc":      {"id": "qc", "title": "Quality control", "kind": "capability", "capability": "gwas.qc"},
+    "assoc":   {"id": "assoc", "title": "Association scan", "kind": "capability", "capability": "gwas.associate"},
+    "correct": {"id": "correct", "title": "Multiple testing", "kind": "capability", "capability": "gwas.correct"},
+    "review":  {"id": "review", "title": "Is the model calibrated?", "kind": "review", "capability": None},
+    "answer":  {"id": "answer", "title": "Report the loci", "kind": "answer", "capability": None},
+}
+
+R2_STEPS = {
+    "qc":       {"id": "qc", "title": "Quality control", "kind": "capability", "capability": "gwas.qc"},
+    "pca":      {"id": "pca", "title": "Ancestry axes", "kind": "capability", "capability": "gwas.pca"},
+    "kinship":  {"id": "kinship", "title": "Relatedness matrix", "kind": "capability", "capability": "gwas.kinship"},
+    "assoc":    {"id": "assoc", "title": "Structure-aware scan", "kind": "capability", "capability": "gwas.associate"},
+    "correct":  {"id": "correct", "title": "Multiple testing", "kind": "capability", "capability": "gwas.correct"},
+    "annotate": {"id": "annotate", "title": "Annotate the hits", "kind": "capability", "capability": "gwas.annotate"},
+}
+
+R1_TRACKS = {
+    "qc":      [(0, "pending"), (1.0, "running"), (2.6, "succeeded")],
+    "assoc":   [(0, "pending"), (2.9, "running"), (4.8, "succeeded")],
+    "correct": [(0, "pending"), (5.1, "running"), (6.6, "succeeded")],
+    "review":  [(0, "pending"), (6.9, "running"), (8.2, "succeeded")],
+    "answer":  [(0, "pending")],          # never reached — the plan is replaced
+}
+
+R2_TRACKS = {
+    "qc":       [(0, "pending"), (SWAP + 0.3, "running"), (SWAP + 1.4, "succeeded")],
+    "pca":      [(0, "pending"), (SWAP + 1.7, "running"), (SWAP + 3.5, "succeeded")],
+    "kinship":  [(0, "pending"), (SWAP + 1.7, "running"), (SWAP + 4.1, "succeeded")],
+    "assoc":    [(0, "pending"), (SWAP + 4.4, "running"), (SWAP + 6.0, "succeeded")],
+    "correct":  [(0, "pending"), (SWAP + 6.3, "running"), (SWAP + 7.3, "succeeded")],
+    "annotate": [(0, "pending"), (SWAP + 7.6, "running"), (SWAP + 8.2, "succeeded")],
+}
+
+NARRATION = [
+    (0.0, 1.0, ACCENT, "revision 1 published · 5 steps · validated before anything ran"),
+    (1.0, 2.9, RUN, "quality control · 150 markers in, 148 out"),
+    (2.9, 5.1, RUN, "one scan, one marker at a time — nothing to run in parallel"),
+    (5.1, 6.9, RUN, "correcting for multiple testing · 8 markers survive"),
+    (6.9, 8.2, RUN, "review: reading the genomic inflation factor off the artifact"),
+    (8.2, SWAP, ERR, "λ = 2.8024 — every statistic is inflated, not eight loci. 5 of the 8 are ancestry."),
+    (SWAP, SWAP + 1.7, ACCENT, "revision 2 published · the review step rewrote the plan, not the answer"),
+    (SWAP + 1.7, SWAP + 4.4, RUN, "ancestry and relatedness dispatched together — no edge between them"),
+    (SWAP + 4.4, SWAP + 6.3, RUN, "the scan waited for both parents · fan-in, not a race"),
+    (SWAP + 6.3, SWAP + 7.3, RUN, "correcting for multiple testing"),
+    (SWAP + 7.3, DUR, OK, "λ = 0.9461 · 3 markers survive, and all three are real"),
+]
+
+
+def hero() -> str:
+    header_h, reason_h = 62, 36
+    top = header_h + reason_h
+    graph_y = top + 20
+    lane = NODE_W + LANE_GAP                       # centre-to-centre of layer 1
+    graph_x = 316
+    centre = graph_x + (2 * NODE_W + LANE_GAP - NODE_W) // 2
+
+    def row(layer: int) -> int:
+        return graph_y + layer * (NODE_H + LAYER_GAP)
+
+    r1_pos = {key: (centre, row(index)) for index, key in enumerate(R1_STEPS)}
+    r2_pos = {
+        "qc": (centre, row(0)),
+        "pca": (graph_x, row(1)),
+        "kinship": (graph_x + lane, row(1)),
+        "assoc": (centre, row(2)),
+        "correct": (centre, row(3)),
+        "annotate": (centre, row(4)),
+    }
+    r1_edges = [("qc", "assoc"), ("assoc", "correct"), ("correct", "review"), ("review", "answer")]
+    r2_edges = [("qc", "pca"), ("qc", "kinship"), ("pca", "assoc"), ("kinship", "assoc"),
+                ("assoc", "correct"), ("correct", "annotate")]
+
+    width = 820
+    height = row(4) + NODE_H + 46
+
+    def revision_group(steps, pos, edges, tracks, visible_from, visible_to) -> str:
+        """One revision's whole graph, shown only while that revision is current."""
+        def bottom(key):
+            x, y = pos[key]
+            return x + NODE_W // 2, y + NODE_H
+
+        def top_of(key):
+            x, y = pos[key]
+            return x + NODE_W // 2, y
+
+        def tone(child):
+            entries = dict((status, t) for t, status in tracks[child])
+            if "running" not in entries:
+                return [(0, "idle")]
+            return [(0, "idle"), (entries["running"], "active"),
+                    *([(entries["succeeded"], "done")] if "succeeded" in entries else [])]
+
+        body = [edge_svg(bottom(a), top_of(b), tone(b), DUR) for a, b in edges]
+        body += [node_svg(*pos[key], steps[key], tracks[key], DUR) for key in steps]
+
+        times = [0.0, visible_from, visible_to] if visible_from > 0 else [0.0, visible_to]
+        values = ["0", "1", "0"] if visible_from > 0 else ["1", "0"]
+        if visible_to >= DUR:
+            times, values = times[:-1], values[:-1]
+        return (
+            f'<g opacity="0">{keyed("opacity", values, times, DUR)}'
+            + "".join(body) + "</g>"
+        )
+
+    out = frame(
+        width, height,
+        "An association plan replacing itself",
+        "Revision 1 of an association plan runs to a review step, which reads a genomic "
+        "inflation factor of 2.80 off the artifact and concludes the model is confounded. "
+        "Revision 2 replaces it with a structure-aware plan in which ancestry axes and a "
+        "relatedness matrix are dispatched together, and the corrected scan returns a "
+        "calibrated inflation factor of 0.95.",
+    )
+
+    # Header chrome
+    out += [
         f'<rect x="1" y="1" width="{width - 2}" height="{header_h}" fill="{SURFACE}"/>',
         f'<line x1="0" y1="{header_h}" x2="{width}" y2="{header_h}" stroke="{HAIRLINE}"/>',
+        heading(20, 48, "Find markers associated with salt tolerance in the uploaded cohort."),
+    ]
+    # Badge + step count flip at the swap.
+    for label, count, start, end in (("R1", "5 steps", 0.0, SWAP), ("R2", "9 steps", SWAP, DUR)):
+        times = [0.0, start, end] if start > 0 else [0.0, end]
+        values = ["0", "1", "0"] if start > 0 else ["1", "0"]
+        if end >= DUR:
+            times, values = times[:-1], values[:-1]
+        out.append(
+            f'<g opacity="0">{keyed("opacity", values, times, DUR)}'
+            f'<rect x="20" y="14" width="34" height="18" rx="6" fill="{ACCENT_WASH}"/>'
+            f'<text x="37" y="27" class="m" font-size="10.5" font-weight="700" fill="{ACCENT}" '
+            f'text-anchor="middle">{label}</text>'
+            f'<text x="62" y="27" class="s" font-size="11" fill="{INK3}">{count}</text></g>'
+        )
 
-        # Revision badge, step count, goal
-        f'<rect x="20" y="14" width="34" height="18" rx="6" fill="{ACCENT_WASH}"/>',
-        f'<text x="37" y="27" class="m" font-size="10.5" font-weight="700" '
-        f'fill="{ACCENT}" text-anchor="middle">R2</text>',
-        f'<text x="62" y="27" class="s" font-size="11" fill="{INK3}">9 steps</text>',
-        f'<text x="20" y="48" class="s" font-size="12" font-weight="600" fill="{INK}">'
-        f'Find markers associated with salt tolerance in the uploaded cohort.</text>',
-
-        # Revision switcher, as the renderer draws it
+    # Revision switcher: R2 only appears once it exists.
+    out += [
         f'<rect x="716" y="12" width="86" height="24" rx="8" fill="{SUNKEN}" stroke="{HAIRLINE}"/>',
-        f'<text x="737" y="28" class="m" font-size="10.5" font-weight="600" '
-        f'fill="{INK3}" text-anchor="middle">R1</text>',
-        f'<rect x="757" y="15" width="42" height="18" rx="6" fill="{SURFACE}"/>',
-        f'<text x="778" y="28" class="m" font-size="10.5" font-weight="700" '
-        f'fill="{ACCENT}" text-anchor="middle">R2</text>',
+        f'<g opacity="1">{keyed("opacity", ["1", "0"], [0.0, SWAP], DUR)}'
+        f'<rect x="718" y="15" width="42" height="18" rx="6" fill="{SURFACE}"/></g>',
+        f'<g opacity="0">{keyed("opacity", ["0", "1"], [0.0, SWAP], DUR)}'
+        f'<rect x="757" y="15" width="42" height="18" rx="6" fill="{SURFACE}"/></g>',
+        f'<text x="739" y="28" class="m" font-size="10.5" font-weight="700" fill="{ACCENT}" '
+        f'text-anchor="middle">R1</text>',
+        f'<text x="778" y="28" class="m" font-size="10.5" font-weight="600" fill="{INK3}" '
+        f'text-anchor="middle">R2</text>',
+    ]
 
-        # Replan reason bar
-        f'<rect x="1" y="{header_h}" width="{width - 2}" height="{reason_h}" fill="{ACCENT_WASH}"/>',
+    # The bar under the header: plan summary while R1 is current, replan reason after.
+    out += [
+        f'<rect x="1" y="{header_h}" width="{width - 2}" height="{reason_h}" fill="{SUNKEN}">'
+        f'{keyed("fill", [SUNKEN, ACCENT_WASH], [0.0, SWAP], DUR)}</rect>',
         f'<line x1="0" y1="{top}" x2="{width}" y2="{top}" stroke="{HAIRLINE}"/>',
-        f'<text x="20" y="{header_h + 23}" class="s" font-size="11" fill="{INK2}">'
+        f'<text x="20" y="{header_h + 23}" class="s" font-size="11" fill="{INK2}" opacity="1">'
+        f'{keyed("opacity", ["1", "0"], [0.0, SWAP], DUR)}'
+        f'QC the genotypes, scan every marker, correct for multiple testing.</text>',
+        f'<text x="20" y="{header_h + 23}" class="s" font-size="11" fill="{INK2}" opacity="0">'
+        f'{keyed("opacity", ["0", "1"], [0.0, SWAP], DUR)}'
         f'<tspan font-weight="600" fill="{ACCENT}">Replanned: </tspan>'
         f'λ = 2.8024 in revision 1 — the statistics are inflated genome-wide, which is '
         f'population structure rather than signal.</text>',
+    ]
 
-        # The graph pane: cool grey, 20px dot grid
+    # Graph pane
+    out += [
         f'<defs><pattern id="dots" width="20" height="20" patternUnits="userSpaceOnUse">'
         f'<circle cx="1" cy="1" r="1" fill="{GRAPH_DOT}"/></pattern></defs>',
         f'<rect x="1" y="{top}" width="{width - 2}" height="{height - top - 1}" fill="{GRAPH_CANVAS}"/>',
         f'<rect x="1" y="{top}" width="{width - 2}" height="{height - top - 1}" fill="url(#dots)"/>',
     ]
 
-    # The conversation overlay the workbench floats over the canvas.
-    card_y = top + 26
+    # The side cards.
+    card_y = top + 34
     out += [
-        f'<rect x="20" y="{card_y}" width="272" height="86" rx="14" fill="{SURFACE}" '
-        f'stroke="{LINE}"/>',
-        f'<text x="36" y="{card_y + 22}" class="s" font-size="9.5" font-weight="600" '
-        f'fill="{INK3}" letter-spacing="0.8">WHAT THE USER ASKED</text>',
-        f'<text x="36" y="{card_y + 42}" class="s" font-size="11" fill="{INK}">'
-        f'Which markers are associated with salt</text>',
-        f'<text x="36" y="{card_y + 58}" class="s" font-size="11" fill="{INK}">'
-        f'tolerance in this cohort?</text>',
-        f'<text x="36" y="{card_y + 76}" class="m" font-size="9.5" fill="{INK3}">'
-        f'120 samples · 150 markers</text>',
-
-        f'<rect x="20" y="{card_y + 104}" width="272" height="118" rx="14" fill="#fffaf3" '
-        f'stroke="{ACCENT}" stroke-opacity="0.25"/>',
-        f'<text x="36" y="{card_y + 126}" class="s" font-size="9.5" font-weight="600" '
-        f'fill="{ACCENT}" letter-spacing="0.6">WHAT THE AGENT CHANGED</text>',
-        f'<rect x="190" y="{card_y + 114}" width="26" height="15" rx="5" fill="{ACCENT_WASH}"/>',
-        f'<text x="203" y="{card_y + 125}" class="m" font-size="9" font-weight="700" '
-        f'fill="{ACCENT}" text-anchor="middle">R2</text>',
-        f'<text x="36" y="{card_y + 146}" class="s" font-size="11" fill="{INK2}">'
-        f'The first scan was not wrong about the</text>',
-        f'<text x="36" y="{card_y + 162}" class="s" font-size="11" fill="{INK2}">'
-        f'arithmetic. It was wrong about the model:</text>',
-        f'<text x="36" y="{card_y + 178}" class="s" font-size="11" fill="{INK2}">'
-        f'ancestry moves the phenotype and most</text>',
-        f'<text x="36" y="{card_y + 194}" class="s" font-size="11" fill="{INK2}">'
-        f'allele frequencies at once.</text>',
-        f'<text x="36" y="{card_y + 212}" class="m" font-size="9.5" fill="{ACCENT}">'
-        f'λ 2.8024 → 0.9461 · 8 hits → 3</text>',
+        panel(20, card_y, 272, 84),
+        eyebrow(36, card_y + 22, "WHAT THE USER ASKED", INK3),
+        caption(36, card_y + 42, "Which markers are associated with salt", INK, 11, mono=False),
+        caption(36, card_y + 58, "tolerance in this cohort?", INK, 11, mono=False),
+        caption(36, card_y + 74, "120 samples · 150 markers", INK3, 9.5),
     ]
+    # The second card only exists after the replan — it is the agent's reason.
+    finding_y = card_y + 104
+    out.append(
+        f'<g opacity="0">{keyed("opacity", ["0", "1"], [0.0, SWAP], DUR)}'
+        + panel(20, finding_y, 272, 132, stroke=ACCENT, fill="#fffaf3")
+        + eyebrow(36, finding_y + 22, "WHAT THE AGENT CHANGED", ACCENT)
+        + f'<rect x="204" y="{finding_y + 10}" width="26" height="15" rx="5" fill="{ACCENT_WASH}"/>'
+        + f'<text x="217" y="{finding_y + 21}" class="m" font-size="9" font-weight="700" '
+          f'fill="{ACCENT}" text-anchor="middle">R2</text>'
+        + caption(36, finding_y + 44, "The first scan was not wrong about the", INK2, 11, mono=False)
+        + caption(36, finding_y + 60, "arithmetic. It was wrong about the model:", INK2, 11, mono=False)
+        + caption(36, finding_y + 76, "ancestry moves the phenotype and most", INK2, 11, mono=False)
+        + caption(36, finding_y + 92, "allele frequencies at once.", INK2, 11, mono=False)
+        + caption(36, finding_y + 116, "λ 2.8024 → 0.9461 · 8 hits → 3", ACCENT, 9.5)
+        + "</g>"
+    )
 
-    for parent, child in edges:
-        out.append(edge_svg(bottom(parent), top_of(child), tone_track(parent, child), DUR))
+    out.append(revision_group(R1_STEPS, r1_pos, r1_edges, R1_TRACKS, 0.0, SWAP))
+    out.append(revision_group(R2_STEPS, r2_pos, r2_edges, R2_TRACKS, SWAP, DUR))
 
-    for key, step in STEPS.items():
-        x, y = pos[key]
-        out.append(node_svg(x, y, step, TRACKS[key], DUR))
-
-    # Narration track, bottom-left under the cards.
     narration_y = height - 18
     for start, end, colour, text in NARRATION:
         times = [0.0, start, end] if start > 0 else [0.0, end]
         values = ["0", "1", "0"] if start > 0 else ["1", "0"]
+        if end >= DUR:
+            times, values = times[:-1], values[:-1]
         out.append(
-            f'<text x="20" y="{narration_y}" class="m" font-size="10" fill="{INK3}" '
-            f'opacity="0">{keyed("opacity", values, times, DUR)}'
+            f'<text x="20" y="{narration_y}" class="m" font-size="10" fill="{INK3}" opacity="0">'
+            f'{keyed("opacity", values, times, DUR)}'
             f'<tspan fill="{colour}">▸ </tspan>{esc(text)}</text>'
         )
 
@@ -319,7 +458,238 @@ def build() -> str:
     return "\n".join(out)
 
 
+# ════════════════════════════════════════════════════════════════════════════
+#  Figure 2 — kind decides who may write the step
+# ════════════════════════════════════════════════════════════════════════════
+
+def step_kinds() -> str:
+    width, height = 820, 322
+    out = frame(
+        width, height,
+        "Which tool may complete which kind of step",
+        "The agent completes answer, dynamic and review steps itself through update_step. "
+        "Capability and workflow steps are written only by run_capability and run_workflow, "
+        "which dispatch to the engine; update_step against those kinds is refused by the "
+        "broker.",
+    )
+
+    out += [
+        panel(24, 108, 150, 76, stroke=ACCENT, fill="#f6f9f7"),
+        f'<rect x="24" y="108" width="4" height="76" rx="2" fill="{ACCENT}"/>',
+        heading(44, 138, "Agent"),
+        caption(44, 156, "any model", INK3, 9.5),
+        caption(44, 172, "10 tools", INK3, 9.5),
+    ]
+
+    # ── Upper lane: what the agent may close itself ──────────────────────────
+    out += [
+        panel(296, 34, 312, 96, stroke=ACCENT, fill="#f6f9f7"),
+        eyebrow(314, 58, "THE AGENT MAY WRITE THESE", ACCENT),
+        caption(314, 118, "work the agent did itself, in its own sandbox", INK3, 9.5),
+    ]
+    for index, kind in enumerate(("answer", "dynamic", "review")):
+        out.append(pill(314 + index * 96, 70, 88, 26, kind, ACCENT, SURFACE, ACCENT))
+
+    out += [
+        arrow(174, 130, 288, 86, ACCENT, 1.8, curve=10),
+        caption(190, 100, "update_step", ACCENT, 9.5),
+        arrow(614, 82, 668, 82, EDGE, 1.6),
+        caption(678, 78, "status written", INK3, 9.5),
+        caption(678, 92, "by the agent", INK3, 9.5),
+    ]
+
+    # ── Lower lane: what only the server may close ───────────────────────────
+    out += [
+        panel(296, 164, 312, 96, stroke=RUN, fill="#f4f8fc"),
+        eyebrow(314, 188, "ONLY THE SERVER WRITES THESE", RUN),
+        caption(314, 248, "registered, typed units of work", INK3, 9.5),
+    ]
+    for index, kind in enumerate(("capability", "workflow")):
+        out.append(pill(314 + index * 114, 200, 104, 26, kind, RUN, SURFACE, RUN))
+
+    out += [
+        arrow(174, 162, 288, 202, RUN, 1.8, curve=-10),
+        caption(184, 196, "run_capability", RUN, 9.5),
+        caption(184, 209, "run_workflow", RUN, 9.5),
+        arrow(614, 212, 668, 212, EDGE, 1.6),
+        caption(678, 208, "status + artifacts", INK3, 9.5),
+        caption(678, 222, "written by the engine", INK3, 9.5),
+    ]
+
+    # ── The refusal, which is the whole point ────────────────────────────────
+    out += [
+        arrow(150, 194, 288, 268, ERR, 1.6, dashed=True, curve=-14),
+        f'<rect x="150" y="276" width="182" height="22" rx="11" fill="{SURFACE}" '
+        f'stroke="{ERR}" stroke-width="1.2"/>',
+        f'<text x="241" y="291" class="m" font-size="10" font-weight="600" fill="{ERR}" '
+        f'text-anchor="middle">✗ update_step — refused</text>',
+        caption(344, 291, "so a capability step reading \"succeeded\" is always a run "
+                          "that really happened", INK3, 9.5),
+    ]
+    out.append("</svg>")
+    return "\n".join(out)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Figure 3 — the step transition table, as a machine
+# ════════════════════════════════════════════════════════════════════════════
+
+def step_lifecycle() -> str:
+    """Explicit coordinates throughout: derived midpoints put labels inside boxes."""
+    width, height = 820, 300
+    out = frame(
+        width, height,
+        "The step status transition table",
+        "A step goes from pending to running when every dependency has succeeded, or to "
+        "skipped when one failed. Running goes to succeeded when the owner writes a result, "
+        "or to failed when the runner raises or times out. Failed can return to running via "
+        "a bounded retry and skipped via a replan. Succeeded is terminal.",
+    )
+
+    w, h = 128, 34
+    boxes = {
+        "pending":   (90, 120, IDLE, SURFACE),
+        "running":   (310, 120, RUN, "#f4f8fc"),
+        "succeeded": (560, 64, OK, "#f8faf2"),
+        "failed":    (560, 176, ERR, "#fdf6f5"),
+        "skipped":   (90, 230, "#b9b0a0", SUNKEN),
+    }
+    WARN = "#a8864b"
+
+    out += [
+        caption(24, 34, "every write goes through this table, so the log can never contain "
+                        "a step that went backwards", INK3, 10),
+        caption(24, 52, "succeeded is the only terminal state — nothing un-succeeds a step, "
+                        "including a replan", OK, 10),
+    ]
+
+    # Entry
+    out += [
+        f'<circle cx="46" cy="137" r="5" fill="{INK3}"/>',
+        arrow(56, 137, 84, 137, EDGE, 1.5),
+    ]
+
+    # pending → running, label lifted clear of both boxes
+    out += [
+        arrow(218, 137, 304, 137, RUN, 1.6),
+        caption(261, 110, "all deps succeeded", RUN, 9.5, anchor="middle"),
+    ]
+
+    # running → succeeded / failed
+    out += [
+        arrow(438, 130, 554, 84, OK, 1.6, curve=8),
+        caption(470, 102, "owner wrote a result", OK, 9.5, anchor="middle"),
+        arrow(438, 144, 554, 190, ERR, 1.6, curve=-8),
+        caption(468, 192, "raised or timed out", ERR, 9.5, anchor="middle"),
+    ]
+
+    # failed → running: routed below both, so it crosses nothing
+    out += [
+        f'<path d="M600,210 Q600,262 500,262 L432,262 Q378,262 378,164" fill="none" '
+        f'stroke="{WARN}" stroke-width="1.5" stroke-linecap="round"/>',
+        f'<path d="M373.6,164 L378,156 L382.4,164 Z" fill="{WARN}"/>',
+        caption(500, 276, "retry — bounded, with backoff", WARN, 9.5, anchor="middle"),
+    ]
+
+    # pending → skipped, and skipped back into flight after a replan
+    out += [
+        arrow(154, 154, 154, 226, "#b9b0a0", 1.5),
+        caption(164, 194, "a dep failed", "#b9b0a0", 9.5),
+        arrow(218, 243, 330, 160, ACCENT, 1.5, dashed=True, curve=14),
+        caption(238, 224, "a replan unblocked it", ACCENT, 9.5),
+    ]
+
+    for name, (x, y, stroke, fill) in boxes.items():
+        out.append(panel(x, y, w, h, stroke=stroke, fill=fill, radius=10))
+        out.append(
+            f'<text x="{x + w // 2}" y="{y + h // 2 + 4}" class="m" font-size="11.5" '
+            f'font-weight="600" fill="{INK}" text-anchor="middle">{name}</text>'
+        )
+
+    out += [
+        arrow(688, 81, 712, 81, EDGE, 1.5),
+        f'<circle cx="726" cy="81" r="7" fill="none" stroke="{INK3}" stroke-width="1.5"/>',
+        f'<circle cx="726" cy="81" r="3.5" fill="{INK3}"/>',
+        caption(740, 85, "terminal", INK3, 9.5),
+    ]
+    out.append("</svg>")
+    return "\n".join(out)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Figure 4 — the four zones of a session
+# ════════════════════════════════════════════════════════════════════════════
+
+def session_zones() -> str:
+    width, height = 820, 306
+    out = frame(
+        width, height,
+        "The four zones of a session",
+        "A session has four directories with different trust. Uploads belong to the user, "
+        "artifacts are written by the engine, scratch is the agent's own workspace, and "
+        "control holds the plan, the event log and the cursor — no source ref can name it.",
+    )
+
+    out.append(caption(24, 34, "one session on disk · every ref re-checked for containment "
+                               "and re-verified against its checksum, on every use", INK3, 10))
+
+    zone_x, zone_w = 300, 400
+    rows = [
+        ("uploads/", "upload:<id>", "the user's files", ACCENT, "#f6f9f7", 58),
+        ("artifacts/", "artifact:<id>", "execution output", RUN, "#f4f8fc", 116),
+        ("scratch/", "scratch:<path>", "the agent's own workspace", "#6d5bb5", "#f7f5fb", 174),
+        ("control/", "— no ref can name it —", "plan · event log · cursor", ERR, "#fdf6f5", 232),
+    ]
+    out.append(panel(zone_x - 16, 44, zone_w + 32, 234, stroke=HAIRLINE, fill=SUNKEN, radius=14))
+
+    for label, ref, note, stroke, fill, y in rows:
+        out += [
+            panel(zone_x, y, zone_w, 44, stroke=stroke, fill=fill, radius=10),
+            f'<rect x="{zone_x}" y="{y}" width="4" height="44" rx="2" fill="{stroke}"/>',
+            f'<text x="{zone_x + 18}" y="{y + 20}" class="m" font-size="11.5" '
+            f'font-weight="700" fill="{INK}">{esc(label)}</text>',
+            caption(zone_x + 18, y + 35, note, INK3, 9.5),
+            f'<text x="{zone_x + zone_w - 18}" y="{y + 27}" class="m" font-size="10" '
+            f'fill="{stroke}" text-anchor="end">{esc(ref)}</text>',
+        ]
+
+    actors = [
+        ("User", 58, ACCENT, "uploads a file", 0),
+        ("Engine", 116, RUN, "registers output", 1),
+        ("Agent", 174, "#6d5bb5", "reads + writes", 2),
+    ]
+    for name, y, colour, verb, _ in actors:
+        out += [
+            panel(24, y - 4, 112, 52, stroke=colour, fill=SURFACE, radius=10),
+            f'<text x="80" y="{y + 20}" class="s" font-size="12" font-weight="600" '
+            f'fill="{INK}" text-anchor="middle">{esc(name)}</text>',
+            caption(80, y + 36, verb, INK3, 9, anchor="middle"),
+            arrow(140, y + 22, zone_x - 22, y + 22, colour, 1.6),
+        ]
+
+    # The agent also reads the two zones it does not own, and cannot reach control.
+    out += [
+        arrow(136, 190, zone_x - 22, 76, "#6d5bb5", 1.3, curve=26),
+        arrow(136, 186, zone_x - 22, 134, "#6d5bb5", 1.3, curve=14),
+        caption(196, 108, "reads", "#6d5bb5", 9),
+        arrow(136, 208, zone_x - 22, 250, ERR, 1.5, dashed=True, curve=-14),
+        f'<rect x="150" y="264" width="128" height="22" rx="11" fill="{SURFACE}" '
+        f'stroke="{ERR}" stroke-width="1.2"/>',
+        f'<text x="214" y="279" class="m" font-size="9.5" font-weight="600" fill="{ERR}" '
+        f'text-anchor="middle">✗ unreachable</text>',
+    ]
+    out.append("</svg>")
+    return "\n".join(out)
+
+
 if __name__ == "__main__":
-    target = pathlib.Path(__file__).parent / "plan-execution.svg"
-    target.write_text(build())
-    print(f"wrote {target} ({target.stat().st_size:,} bytes)")
+    here = pathlib.Path(__file__).parent
+    for name, builder in (
+        ("plan-execution", hero),
+        ("step-kinds", step_kinds),
+        ("step-lifecycle", step_lifecycle),
+        ("session-zones", session_zones),
+    ):
+        target = here / f"{name}.svg"
+        target.write_text(builder())
+        print(f"wrote {target.name} ({target.stat().st_size:,} bytes)")

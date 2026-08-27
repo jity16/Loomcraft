@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="300" viewBox="0 0 820 300" role="img" aria-label="A step goes from pending to running when every dependency has succeeded, or to skipped when one failed. Running goes to succeeded when the owner writes a result, or to failed when the runner raises or times out. Failed can return to running via a bounded retry and skipped via a replan. Succeeded is terminal.">
+<title>The step status transition table</title>
+<style>
+  .s { font-family: "Inter", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .m { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+</style>
+<rect width="820" height="300" rx="12" fill="#fdfcf8"/>
+<rect x="0.5" y="0.5" width="819" height="299" rx="11.5" fill="none" stroke="#efece3"/>
+<text x="24" y="34" class="m" font-size="10" fill="#687181" text-anchor="start">every write goes through this table, so the log can never contain a step that went backwards</text>
+<text x="24" y="52" class="m" font-size="10" fill="#6b7a3a" text-anchor="start">succeeded is the only terminal state — nothing un-succeeds a step, including a replan</text>
+<circle cx="46" cy="137" r="5" fill="#687181"/>
+<path d="M56.0,137.0 L76.0,137.0" fill="none" stroke="#9aa2af" stroke-width="1.5" stroke-linecap="round"/><path d="M76.0,141.4 L84.0,137.0 L76.0,132.6 Z" fill="#9aa2af"/>
+<path d="M218.0,137.0 L296.0,137.0" fill="none" stroke="#1661ab" stroke-width="1.6" stroke-linecap="round"/><path d="M296.0,141.4 L304.0,137.0 L296.0,132.6 Z" fill="#1661ab"/>
+<text x="261" y="110" class="m" font-size="9.5" fill="#1661ab" text-anchor="middle">all deps succeeded</text>
+<path d="M438.0,130.0 Q498.9,114.4 546.6,86.9" fill="none" stroke="#6b7a3a" stroke-width="1.6" stroke-linecap="round"/><path d="M548.2,91.0 L554.0,84.0 L544.9,82.9 Z" fill="#6b7a3a"/>
+<text x="470" y="102" class="m" font-size="9.5" fill="#6b7a3a" text-anchor="middle">owner wrote a result</text>
+<path d="M438.0,144.0 Q498.9,159.6 546.6,187.1" fill="none" stroke="#c03030" stroke-width="1.6" stroke-linecap="round"/><path d="M544.9,191.1 L554.0,190.0 L548.2,183.0 Z" fill="#c03030"/>
+<text x="468" y="192" class="m" font-size="9.5" fill="#c03030" text-anchor="middle">raised or timed out</text>
+<path d="M600,210 Q600,262 500,262 L432,262 Q378,262 378,164" fill="none" stroke="#a8864b" stroke-width="1.5" stroke-linecap="round"/>
+<path d="M373.6,164 L378,156 L382.4,164 Z" fill="#a8864b"/>
+<text x="500" y="276" class="m" font-size="9.5" fill="#a8864b" text-anchor="middle">retry — bounded, with backoff</text>
+<path d="M154.0,154.0 L154.0,218.0" fill="none" stroke="#b9b0a0" stroke-width="1.5" stroke-linecap="round"/><path d="M149.6,218.0 L154.0,226.0 L158.4,218.0 Z" fill="#b9b0a0"/>
+<text x="164" y="194" class="m" font-size="9.5" fill="#b9b0a0" text-anchor="start">a dep failed</text>
+<path d="M218.0,243.0 Q282.3,212.7 323.6,164.8" fill="none" stroke="#4a7d5b" stroke-width="1.5" stroke-linecap="round" stroke-dasharray="5 4"/><path d="M326.2,168.3 L330.0,160.0 L321.0,161.2 Z" fill="#4a7d5b"/>
+<text x="238" y="224" class="m" font-size="9.5" fill="#4a7d5b" text-anchor="start">a replan unblocked it</text>
+<rect x="90" y="120" width="128" height="34" rx="10" fill="#ffffff" stroke="#687181" stroke-width="1.3"/>
+<text x="154" y="141" class="m" font-size="11.5" font-weight="600" fill="#1a2332" text-anchor="middle">pending</text>
+<rect x="310" y="120" width="128" height="34" rx="10" fill="#f4f8fc" stroke="#1661ab" stroke-width="1.3"/>
+<text x="374" y="141" class="m" font-size="11.5" font-weight="600" fill="#1a2332" text-anchor="middle">running</text>
+<rect x="560" y="64" width="128" height="34" rx="10" fill="#f8faf2" stroke="#6b7a3a" stroke-width="1.3"/>
+<text x="624" y="85" class="m" font-size="11.5" font-weight="600" fill="#1a2332" text-anchor="middle">succeeded</text>
+<rect x="560" y="176" width="128" height="34" rx="10" fill="#fdf6f5" stroke="#c03030" stroke-width="1.3"/>
+<text x="624" y="197" class="m" font-size="11.5" font-weight="600" fill="#1a2332" text-anchor="middle">failed</text>
+<rect x="90" y="230" width="128" height="34" rx="10" fill="#f7f4ec" stroke="#b9b0a0" stroke-width="1.3"/>
+<text x="154" y="251" class="m" font-size="11.5" font-weight="600" fill="#1a2332" text-anchor="middle">skipped</text>
+<path d="M688.0,81.0 L704.0,81.0" fill="none" stroke="#9aa2af" stroke-width="1.5" stroke-linecap="round"/><path d="M704.0,85.4 L712.0,81.0 L704.0,76.6 Z" fill="#9aa2af"/>
+<circle cx="726" cy="81" r="7" fill="none" stroke="#687181" stroke-width="1.5"/>
+<circle cx="726" cy="81" r="3.5" fill="#687181"/>
+<text x="740" y="85" class="m" font-size="9.5" fill="#687181" text-anchor="start">terminal</text>
+</svg>
