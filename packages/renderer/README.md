@@ -4,7 +4,11 @@ React components and state for LoomCraft plans. The only peer dependency is
 React — the DAG layout, the pan/zoom canvas, and the SSE reader are first-party.
 
 ```bash
-npm install @loomcraft/renderer
+# Not on npm, and npm cannot install from a git subdirectory — build once,
+# then install by path.
+git clone https://github.com/jity16/Loomcraft.git
+cd Loomcraft/packages/renderer && npm install && npm run build
+cd /your/app && npm install /path/to/Loomcraft/packages/renderer
 ```
 
 ```tsx

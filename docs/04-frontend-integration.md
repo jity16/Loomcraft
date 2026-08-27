@@ -37,7 +37,11 @@ Take as many layers as you want. The bottom one has no React dependency at all,
 so a Vue or Svelte host still gets the reducer and the layout.
 
 ```bash
-npm install @loomcraft/renderer
+# Not on npm, and npm cannot install from a git subdirectory — build once,
+# then install by path.
+git clone https://github.com/jity16/Loomcraft.git
+cd Loomcraft/packages/renderer && npm install && npm run build
+cd /your/app && npm install /path/to/Loomcraft/packages/renderer
 ```
 
 The only peer dependency is React. The DAG layout, the pan/zoom canvas, and the

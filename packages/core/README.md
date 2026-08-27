@@ -4,11 +4,12 @@ The Python engine: plan validation, DAG execution, the agent tool surface, and
 session state.
 
 ```bash
-pip install loomcraft                        # engine only (pydantic)
-pip install 'loomcraft[server]'              # + FastAPI router with SSE
-pip install 'loomcraft[anthropic]'           # + Claude agent loop
-pip install 'loomcraft[openai]'              # + OpenAI-compatible agent loop
-pip install 'loomcraft[all]'                 # everything
+# Not on PyPI — install from the repository.
+pip install "git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"                       # engine only (pydantic)
+pip install "loomcraft[server] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"   # + FastAPI router with SSE
+pip install "loomcraft[anthropic] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"  # + Claude agent loop
+pip install "loomcraft[openai] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"   # + OpenAI-compatible agent loop
+pip install "loomcraft[all] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"      # everything
 ```
 
 ```python

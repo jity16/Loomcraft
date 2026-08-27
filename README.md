@@ -124,9 +124,22 @@ SSE streaming with resume, and a React renderer that reads the same events.
 ## Quick start
 
 ```bash
-pip install loomcraft            # engine only — one dependency (pydantic)
-pip install 'loomcraft[server,anthropic]'   # + FastAPI/SSE + Claude agent
+# Engine only — one dependency (pydantic)
+pip install "git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"
+
+# …with the optional extras: FastAPI/SSE server, Claude agent, OpenAI agent
+pip install "loomcraft[server,anthropic] @ git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"
 ```
+
+> Not on PyPI or npm — install from the repository. For the React renderer,
+> `npm` cannot install from a git subdirectory, so build it once and install by
+> path:
+>
+> ```bash
+> git clone https://github.com/jity16/Loomcraft.git
+> cd Loomcraft/packages/renderer && npm install && npm run build
+> cd /your/app && npm install /path/to/Loomcraft/packages/renderer
+> ```
 
 **1 · Register what your agent is allowed to do.**
 

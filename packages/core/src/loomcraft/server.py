@@ -13,7 +13,7 @@ mid-run rejoins cleanly instead of restarting.
 
 Install the extra to use this module::
 
-    pip install 'loomcraft[server]'
+    pip install "loomcraft[server] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"
 """
 
 from __future__ import annotations
@@ -144,7 +144,8 @@ def create_router(
     """
     if not FASTAPI_AVAILABLE:  # pragma: no cover
         raise RuntimeError(
-            "loomcraft.server needs FastAPI: pip install 'loomcraft[server]'"
+            "loomcraft.server needs FastAPI: "
+            'pip install "loomcraft[server] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"'
         )
 
     router = APIRouter(prefix=prefix, tags=["loomcraft"])
@@ -408,7 +409,8 @@ def create_app(
     """A ready-to-serve FastAPI app — handy for demos and the examples."""
     if not FASTAPI_AVAILABLE:  # pragma: no cover
         raise RuntimeError(
-            "loomcraft.server needs FastAPI: pip install 'loomcraft[server]'"
+            "loomcraft.server needs FastAPI: "
+            'pip install "loomcraft[server] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"'
         )
     app = FastAPI(title=title, version="0.1.0")
     manager = TurnManager()

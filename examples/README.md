@@ -10,7 +10,8 @@ is what an agent-authored plan is for. A fixed pipeline cannot notice that its
 own model was misspecified, because it has no way to change what it does next.
 
 ```bash
-pip install -e packages/core          # or: pip install loomcraft
+git clone https://github.com/jity16/Loomcraft.git && cd Loomcraft
+pip install -e packages/core
 
 python examples/01-gwas-discovery/run_scripted.py
 python examples/02-literature-meta/run_scripted.py
@@ -63,7 +64,7 @@ are arithmetic, not narration.
 ```bash
 python examples/01-gwas-discovery/run_scripted.py      # 16 annotated sections
 
-pip install 'loomcraft[server]'
+pip install -e "packages/core[server]"
 python examples/01-gwas-discovery/serve.py --write-cohort   # sample data
 python examples/01-gwas-discovery/serve.py --scripted       # http://127.0.0.1:8000
 ```
@@ -96,7 +97,7 @@ narrative synthesis that says plainly it is not a meta-analysis.
 ```bash
 python examples/02-literature-meta/run_scripted.py   # both branches
 
-pip install 'loomcraft[anthropic]'
+pip install -e "packages/core[anthropic]"
 export ANTHROPIC_API_KEY=...                         # or: ant auth login
 python examples/02-literature-meta/run_live.py
 python examples/02-literature-meta/run_live.py --partial --decline

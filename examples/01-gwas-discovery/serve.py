@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Example 1 — serve the study over HTTP with a live SSE event stream.
 
-    pip install 'loomcraft[server,anthropic]'
+    pip install -e "packages/core[server,anthropic]"   # from a clone
     export ANTHROPIC_API_KEY=...            # or: ant auth login
     python examples/01-gwas-discovery/serve.py
 
@@ -242,7 +242,7 @@ def main() -> int:
     try:
         import uvicorn
     except ImportError:
-        print("This example needs the server extra: pip install 'loomcraft[server]'")
+        print('This example needs the server extra: pip install -e "packages/core[server]"')
         return 2
 
     store = SessionStore(Path(args.data))

@@ -108,9 +108,21 @@ LoomCraft 是第三条路。任务图由智能体在运行时**自己写**——
 ## 快速开始
 
 ```bash
-pip install loomcraft            # 只要引擎 —— 只有一个依赖（pydantic）
-pip install 'loomcraft[server,anthropic]'   # 再加 FastAPI/SSE + Claude 智能体
+# 只要引擎 —— 只有一个依赖（pydantic）
+pip install "git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"
+
+# 带上可选 extras：FastAPI/SSE 服务、Claude 智能体、OpenAI 智能体
+pip install "loomcraft[server,anthropic] @ git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"
 ```
+
+> 没有发到 PyPI / npm，直接从仓库装。React 渲染器那边，`npm` 不支持从 git 子目录安装，
+> 所以先构建一次再按路径装：
+>
+> ```bash
+> git clone https://github.com/jity16/Loomcraft.git
+> cd Loomcraft/packages/renderer && npm install && npm run build
+> cd /你的/项目 && npm install /path/to/Loomcraft/packages/renderer
+> ```
 
 **1 · 注册你允许智能体做的事。**
 

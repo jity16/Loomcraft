@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Example 2 — the same meta-analysis, driven by a real Claude agent.
 
-    pip install \'loomcraft[anthropic]\'
+    pip install -e "packages/core[anthropic]"   # from a clone
     export ANTHROPIC_API_KEY=...        # or: ant auth login
     python examples/02-literature-meta/run_live.py
 
@@ -109,7 +109,7 @@ async def main() -> int:
     try:
         import anthropic  # noqa: F401,PLC0415
     except ImportError:
-        print("This example needs the Anthropic SDK: pip install 'loomcraft[anthropic]'")
+        print('This example needs the Anthropic SDK: pip install -e "packages/core[anthropic]"')
         return 2
 
     with TemporaryDirectory() as tmp:
