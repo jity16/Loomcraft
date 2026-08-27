@@ -50,6 +50,51 @@ real plan rather than a chat transcript pretending to be one.
      alt="LoomCraft request path: the agent calls tools, the broker validates and authorizes every call, the engine runs the DAG, both write to an append-only hash-chained event log, and the renderer subscribes to that log over SSE. User uploads and approvals flow from the renderer back to the agent.">
 </div>
 
+### What that buys you
+
+Enough abstraction. Here is real output from
+[example 1](examples/01-gwas-discovery/) — no API key, no network, under three
+seconds end to end:
+
+```
+ 6 · The naive scan, and the diagnostic that condemns it
+   genomic inflation λ              2.8024   ← a calibrated scan sits near 1.0
+   survive FDR                      8
+   …of which are real               3 of 8
+   false positives                  rs9701, rs5543, rs11703, rs2001, rs10317
+
+ 7 · Agent-reported steps: the review that changes the plan
+   faking a capability step         refused — step 'assoc' is a capability step
+   rerun 'assoc' in place           refused — cannot start from 'succeeded'
+   what mlm says for itself         model='mlm' needs a kinship matrix on 'grm'
+   conclusion                       the plan needs a step it does not have
+
+ 8 · Replan discipline: revision 2 has to explain itself
+   revision 2 accepted              True
+   layer 1                          kinship, pca   ← the engine may run these at once
+
+11 · The corrected scan
+   genomic inflation λ              2.8024  →  0.9461
+   survive correction               8  →  3
+   recovered                        rs1385, rs2309, rs3233
+   markers with a real effect       rs1385, rs2309, rs3233
+```
+
+Not one of those numbers is a fixture. The cohort in `data.py` is built so that
+ancestry moves the phenotype *and* most allele frequencies at once, which makes
+λ = 2.80 an arithmetic consequence of the design; the fall to 0.9461 and the
+three survivors are computed the same way. Nobody told the agent its first
+answer was wrong. Its own `review` step read the number off the artifact and
+rewrote the plan.
+
+A fixed pipeline cannot do that — it has no way to change what it does next. An
+unconstrained agent loop cannot be trusted to, because it can simply declare
+itself finished. Here it cannot: `assoc` is a `capability` step, so the broker
+refused both the attempt to mark it done and the attempt to quietly re-run it
+with better settings. The only thing the agent was allowed to change was the
+plan — and every change to the plan left a revision number and a reason behind
+it.
+
 ### What the server guarantees
 
 A plan is not a suggestion the UI decorates. These are enforced, with tests:
