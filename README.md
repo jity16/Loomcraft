@@ -7,7 +7,22 @@
 The agent writes the graph. The server proves it is safe. The engine runs it.
 The UI draws it — live.
 
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-38bdf8?style=flat-square&logo=python&logoColor=white&labelColor=0b1120)](packages/core/pyproject.toml)
+[![React 18+](https://img.shields.io/badge/react-18+-a78bfa?style=flat-square&logo=react&logoColor=white&labelColor=0b1120)](packages/renderer/package.json)
+[![core deps: pydantic only](https://img.shields.io/badge/core%20deps-pydantic%20only-fbbf24?style=flat-square&labelColor=0b1120)](packages/core/pyproject.toml)
+[![tests: 232 passing](https://img.shields.io/badge/tests-232%20passing-34d399?style=flat-square&labelColor=0b1120)](#testing)
+[![license: MIT](https://img.shields.io/badge/license-MIT-f472b6?style=flat-square&labelColor=0b1120)](LICENSE)
+
 [Quick start](#quick-start) · [Core concepts](#core-concepts) · [Architecture](#architecture) · [Docs](docs/) · [Examples](examples/)
+
+<br>
+
+<img src="assets/dag-execution.svg" width="820"
+     alt="An animated LoomCraft plan running: clean succeeds, profile and outliers are dispatched together because neither depends on the other, outliers fails and is retried with backoff, report fans in once both parents succeed, and answer completes the plan.">
+
+<sub>Not a mockup — this is the plan in <a href="#plan">Core concepts</a>, with the scheduling
+the engine actually performs.<br>
+Parallel layers, a retry with backoff, a fan-in, and the one step kind the agent may close itself.</sub>
 
 </div>
 
@@ -26,25 +41,10 @@ owns every execution result, and streams each state change as an event. You get
 model-authored flexibility with server-enforced safety, and a UI that shows the
 real plan rather than a chat transcript pretending to be one.
 
-```
-                 publish_plan          run_capability
-   ┌────────┐   ─────────────►  ┌──────────┐  ────────►  ┌────────┐
-   │ Agent  │                   │  Broker  │             │ Engine │
-   │ (any   │   ◄─────────────  │ validate │  ◄────────  │ DAG    │
-   │ model) │   tool results    │ authorize│   results   │ runner │
-   └────────┘                   └────┬─────┘             └───┬────┘
-                                     │ events                │
-                                     ▼                       │
-                              ┌─────────────┐                │
-                              │  Event log  │ ◄──────────────┘
-                              │ (hash-chain)│
-                              └──────┬──────┘
-                                     │ SSE
-                                     ▼
-                              ┌─────────────┐
-                              │  Renderer   │  live DAG, timeline, artifacts
-                              └─────────────┘
-```
+<div align="center">
+<img src="assets/architecture.svg" width="820"
+     alt="LoomCraft request path: the agent calls tools, the broker validates and authorizes every call, the engine runs the DAG, both write to an append-only hash-chained event log, and the renderer subscribes to that log over SSE. User uploads and approvals flow from the renderer back to the agent.">
+</div>
 
 ### What the server guarantees
 
@@ -169,8 +169,9 @@ A versioned DAG the agent publishes through `publish_plan`. Each step has an
 ```
 
 `profile` and `outliers` both depend only on `clean` and not on each other, so
-the engine runs them **concurrently**. Parallelism is a property of the graph,
-never a keyword the plan author has to remember.
+the engine runs them **concurrently** — that is the layer lighting up twice at
+once in the animation at the top of this page. Parallelism is a property of the
+graph, never a keyword the plan author has to remember.
 
 ### Step kinds
 
@@ -183,6 +184,66 @@ Kind decides *who is allowed to complete the step* — the important half.
 | `dynamic` | Work the agent does itself in its sandbox | the agent, via `update_step` |
 | `review` | Explicit verification of produced artifacts | the agent, via `update_step` |
 | `answer` | Composing the final reply | the agent, via `update_step` |
+
+```mermaid
+flowchart LR
+    A(["Agent"]):::agent
+
+    A -- "update_step" --> AK["<b>answer</b> · <b>dynamic</b> · <b>review</b><br/><i>work the agent did itself</i>"]:::selfwrite
+    A -- "run_capability<br/>run_workflow" --> SK["<b>capability</b> · <b>workflow</b><br/><i>registered units of work</i>"]:::servwrite
+    A -. "update_step — refused" .-> SK
+
+    SK --> ENG(["Engine"]):::engine
+    ENG -- "status + artifacts" --> LOG[("Event log")]:::log
+    AK -- "status" --> LOG
+
+    classDef agent     fill:#2b2150,stroke:#a78bfa,stroke-width:2px,color:#ede9fe
+    classDef selfwrite fill:#1f2937,stroke:#a78bfa,stroke-width:1.5px,color:#e5e7eb
+    classDef servwrite fill:#0f2f3f,stroke:#38bdf8,stroke-width:1.5px,color:#e0f2fe
+    classDef engine    fill:#3a2c0a,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
+    classDef log       fill:#0f3b2e,stroke:#34d399,stroke-width:2px,color:#d1fae5
+
+    linkStyle 2 stroke:#fb7185,color:#fb7185
+```
+
+The dotted edge is the whole point: an agent can *ask* to mark a `capability`
+step done, and the broker refuses. A `capability` step reading `succeeded`
+therefore always corresponds to a run that really happened.
+
+### Step lifecycle
+
+Statuses are not free-form strings — every write goes through a transition table,
+so the log can never contain a step that went backwards.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+
+    [*] --> pending
+    pending   --> running   : all deps succeeded
+    pending   --> skipped   : a dep failed
+    running   --> succeeded : the owner wrote a result
+    running   --> failed    : raised or timed out
+    failed    --> running   : retry, with backoff
+    skipped   --> running   : a replan unblocked it
+    succeeded --> [*]
+
+    classDef pend fill:#1f2937,stroke:#64748b,stroke-width:1.5px,color:#e5e7eb
+    classDef run  fill:#3a2c0a,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
+    classDef ok   fill:#0f3b2e,stroke:#34d399,stroke-width:2px,color:#d1fae5
+    classDef bad  fill:#3f1524,stroke:#fb7185,stroke-width:2px,color:#ffe4e6
+    classDef skip fill:#1e293b,stroke:#475569,stroke-width:1.5px,color:#cbd5e1
+
+    class pending pend
+    class running run
+    class succeeded ok
+    class failed bad
+    class skipped skip
+```
+
+`succeeded` is terminal — nothing can un-succeed a step, including a replan.
+`failed` and `skipped` are not: a retry or a higher revision may put them back
+in flight, which is exactly how recovery works without rewriting history.
 
 ### Capability
 
@@ -202,6 +263,43 @@ An input is never a filesystem path. It is `upload:<id>`, `artifact:<id>`, or
 integrity checks on every call. A session has four zones with different trust:
 `uploads/` (the user's), `artifacts/` (execution output), `scratch/` (the agent's
 own workspace), `control/` (server-owned, unreachable by the agent).
+
+```mermaid
+flowchart LR
+    USER(["User"]):::user
+    ENG(["Engine"]):::engine
+    AG(["Agent"]):::agent
+
+    USER -- "uploads a file" --> UP
+    ENG  -- "registers output" --> ART
+    AG   -- "reads" --> UP
+    AG   -- "reads" --> ART
+    AG   -- "reads + writes" --> SCR
+    AG   -. "no ref can name it" .-> CTL
+
+    subgraph SESSION["one session on disk"]
+        direction TB
+        UP["<b>uploads/</b><br/><code>upload:id</code>"]:::up
+        ART["<b>artifacts/</b><br/><code>artifact:id</code>"]:::art
+        SCR["<b>scratch/</b><br/><code>scratch:path</code>"]:::scr
+        CTL["<b>control/</b><br/>plan · event log · cursor"]:::ctl
+    end
+
+    classDef user   fill:#0f3b2e,stroke:#34d399,stroke-width:2px,color:#d1fae5
+    classDef agent  fill:#2b2150,stroke:#a78bfa,stroke-width:2px,color:#ede9fe
+    classDef engine fill:#3a2c0a,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
+    classDef up     fill:#0f3b2e,stroke:#34d399,stroke-width:1.5px,color:#d1fae5
+    classDef art    fill:#0f2f3f,stroke:#38bdf8,stroke-width:1.5px,color:#e0f2fe
+    classDef scr    fill:#1f2937,stroke:#a78bfa,stroke-width:1.5px,color:#e5e7eb
+    classDef ctl    fill:#3f1524,stroke:#fb7185,stroke-width:2px,color:#ffe4e6
+
+    linkStyle 5 stroke:#fb7185,color:#fb7185
+```
+
+Every arrow above is checked on **every** resolution, not once at registration:
+the path is re-confined to the session (symlinks included) and the recorded
+SHA-256 is re-verified, so a file swapped underneath a ref is caught rather than
+consumed.
 
 ### Events
 
@@ -263,8 +361,10 @@ constructor change.
 ## Testing
 
 ```bash
+pip install -e packages/core   # or: export PYTHONPATH=packages/core/src
+
 cd packages/core     && python -m unittest discover -s tests   # 187 tests
-cd packages/renderer && npm test                               # 45 tests
+cd packages/renderer && npm ci && npm test                     # 45 tests
 ```
 
 The core suite runs on the standard library — no pytest required — and covers
