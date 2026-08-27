@@ -28,8 +28,8 @@ An agent doing multi-step work has to satisfy two requirements that pull against
 each other:
 
 **Flexibility.** Real tasks do not fit a template. The right graph for "assess
-this table" depends on what is in the table, and a fixed pipeline either does not
-fit or fits by being so generic it does nothing useful.
+this cohort" depends on what is in the cohort, and a fixed pipeline either does
+not fit or fits by being so generic it does nothing useful.
 
 **Trustworthiness.** If a model can declare its own work finished, nothing
 downstream — including the final answer — rests on anything. And if the work is
@@ -140,8 +140,8 @@ work. That is worth a line in your system prompt (see
 
 ## Decision: source refs, not paths
 
-A capability input is `upload:abc`, `artifact:def`, or `scratch:notes/out.csv` —
-never `/var/data/sessions/s1/uploads/abc/file.csv`.
+A capability input is `upload:abc`, `artifact:def`, or `scratch:notes/out.tsv` —
+never `/var/data/sessions/s1/uploads/abc/cohort.vcf`.
 
 Three problems this solves:
 
@@ -250,7 +250,7 @@ The public one names the field and the problem but never echoes the rejected
 value:
 
 ```
-✗  invalid plan: steps[2].title: Input should be a valid string [input=<8kb of CSV>]
+✗  invalid plan: steps[2].title: Input should be a valid string [input=<8kb of genotype matrix>]
 ✓  steps[2].title: Input should be a valid string
 ```
 

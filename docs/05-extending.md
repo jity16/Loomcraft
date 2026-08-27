@@ -102,11 +102,11 @@ from loomcraft import Capability, CapabilityInput, Parameter, Port, Registry
 registry = Registry()
 
 SUMMARISE = Capability(
-    id="docs.summarise",                    # ^[a-z][a-z0-9_.-]{1,159}$
+    id="lit.harmonise",                    # ^[a-z][a-z0-9_.-]{1,159}$
     name="Summarise a document",
     version="1",
     description="Extractive summary by sentence scoring.",   # the agent reads this
-    runner="docs.summarise",
+    runner="lit.harmonise",
     inputs=(CapabilityInput(
         key="document",
         name="Document",
@@ -126,7 +126,7 @@ SUMMARISE = Capability(
     tags=("summary", "documents", "nlp"),
 )
 
-registry.register_runner("docs.summarise", summarise)
+registry.register_runner("lit.harmonise", summarise)
 registry.register_capability(SUMMARISE)
 ```
 
@@ -158,15 +158,16 @@ using it where abstraction was wanted.
 inputs=(
     CapabilityInput(key="bed", ..., allowed_extensions=(".bed",)),
     CapabilityInput(key="bim", ..., allowed_extensions=(".bim",)),
+    CapabilityInput(key="fam", ..., allowed_extensions=(".fam",)),
     CapabilityInput(key="vcf", ..., allowed_extensions=(".vcf",)),
 ),
-input_variants=(("bed", "bim"), ("vcf",)),
+input_variants=(("bed", "bim", "fam"), ("vcf",)),
 ```
 
-A PLINK pair *or* a VCF. Half a variant is refused; mixing variants is refused.
+A PLINK triple *or* a VCF. Half a variant is refused; mixing variants is refused.
 Inputs outside the matched variant are still accepted as optional context — which
-is how `csv.report` takes an optional `reference` file while requiring
-`profile` + `outliers`.
+is how `gwas.summarise` takes an optional `components` file while requiring
+`qc_report` + `annotated`.
 
 ### Parameters
 
@@ -209,17 +210,17 @@ registry.register_workflow(Workflow(
     inputs=(CapabilityInput(key="documents", name="Documents",
                             description="1–6 documents.", max_files=6),),
     nodes=(
-        WorkflowNode(id="extract", name="Extract", runner="docs.extract",
+        WorkflowNode(id="extract", name="Extract", runner="lit.extract",
                      inputs=("documents",),
                      outputs=(Port(name="corpus", artifact_type="json"),)),
         # Same single dependency ⇒ the engine runs these two concurrently.
-        WorkflowNode(id="summary", name="Summarise", runner="docs.summarise",
+        WorkflowNode(id="summary", name="Summarise", runner="lit.harmonise",
                      depends_on=("extract",),
                      outputs=(Port(name="summary", artifact_type="md"),)),
-        WorkflowNode(id="themes", name="Themes", runner="docs.themes",
+        WorkflowNode(id="themes", name="Themes", runner="lit.influence",
                      depends_on=("extract",),
                      outputs=(Port(name="themes", artifact_type="json"),)),
-        WorkflowNode(id="brief", name="Brief", runner="docs.brief",
+        WorkflowNode(id="brief", name="Brief", runner="lit.brief",
                      depends_on=("summary", "themes")),
     ),
 ))
@@ -610,7 +611,7 @@ class TestSummarise(unittest.IsolatedAsyncioTestCase):
     async def test_produces_a_summary(self):
         upload = self.session.save_upload("doc.md", b"One. Two. Three.")
         run = await self.engine.execute(lc.graph_from_capability(
-            registry.capability("docs.summarise"),
+            registry.capability("lit.harmonise"),
             sources={"document": (upload["source_ref"],)},
             parameters={"max_sentences": 2},
         ))

@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Example 2 — the same scenario, driven by a real Claude agent.
+"""Example 2 — the same meta-analysis, driven by a real Claude agent.
 
-    pip install 'loomcraft[anthropic]'
+    pip install \'loomcraft[anthropic]\'
     export ANTHROPIC_API_KEY=...        # or: ant auth login
-    python examples/02-research-assistant/run_live.py
+    python examples/02-literature-meta/run_live.py
 
 Compare this file with ``run_scripted.py``: the capabilities, the broker, the
 engine, and the events are identical. The only difference is who decides which
 tool to call next. That is the point of the split — you develop and test against
 ``ScriptedAgent``, then change one line for production.
 
-Add ``--one-document`` to withhold the second file and watch a real model
-discover the gap, call ``request_inputs``, and (after you decline) replan around
-the failure on its own.
+By default the model gets all five trial reports and has to notice, on its own,
+that the pooled estimate is carried by one small study.
+
+Add ``--partial`` to start it with only two reports and watch it discover that
+pooling is not possible, call ``request_inputs``, and either use the rest (the
+default) or — with ``--decline`` — replan around a real failure.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parents[2] / "packages" / "core" / "src"))
 
 from capabilities import registry  # noqa: E402
-from run_scripted import DOC_A, DOC_B  # noqa: E402
+import studies  # noqa: E402
 
 from loomcraft import AnthropicAgent, SessionStore, ToolBroker, parse_plan  # noqa: E402
 
@@ -86,9 +89,9 @@ def make_event_printer():
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--one-document",
+        "--partial",
         action="store_true",
-        help="Withhold the second document so the agent must ask for it.",
+        help="Start with only two trials so the agent must ask for the rest.",
     )
     parser.add_argument("--model", default="claude-opus-5")
     parser.add_argument(
@@ -99,7 +102,7 @@ async def main() -> int:
     parser.add_argument(
         "--decline",
         action="store_true",
-        help="With --one-document, decline the request instead of supplying the file.",
+        help="With --partial, decline the request instead of supplying the trials.",
     )
     args = parser.parse_args()
 
@@ -111,10 +114,10 @@ async def main() -> int:
 
     with TemporaryDirectory() as tmp:
         store = SessionStore(Path(tmp) / "sessions")
-        session = store.create("research-live")
-        session.save_upload("q3-migration-engineering.md", DOC_A.encode())
-        if not args.one_document:
-            session.save_upload("q3-migration-product.md", DOC_B.encode())
+        session = store.create("meta-live")
+        names = studies.STARTING if args.partial else tuple(studies.REPORTS)
+        for name in names:
+            session.save_upload(name, studies.REPORTS[name].encode())
 
         broker = ToolBroker(session, registry)
         agent = AnthropicAgent(model=args.model, effort=args.effort)
@@ -126,8 +129,9 @@ async def main() -> int:
 
         result = await agent.run_turn(
             broker,
-            "Produce a comparative research brief across the uploaded Q3 migration "
-            "reports. Call out anywhere the reports disagree.",
+            "Does the salt-tolerance treatment actually improve grain yield, and "
+            "by how much? Pool what is poolable, and tell me how much of the "
+            "answer rests on any single trial.",
             on_event=on_event,
         )
 
@@ -145,15 +149,16 @@ async def main() -> int:
             if args.decline:
                 broker.cancel_input_request(request_id)
                 follow_up = (
-                    "I don't have a second document. Please continue with what you "
+                    "I don\'t have the other trials. Please continue with what you "
                     "have and be explicit about the limitation."
                 )
                 print(f"{BOLD}user declines the request{RESET}")
             else:
-                session.save_upload("q3-migration-product.md", DOC_B.encode())
+                for name in studies.REQUESTED:
+                    session.save_upload(name, studies.REPORTS[name].encode())
                 broker.fulfill_input_request(request_id)
                 follow_up = requests[0]["continue_prompt"]
-                print(f"{BOLD}user uploads the second document{RESET}")
+                print(f"{BOLD}user uploads the remaining trials{RESET}")
             print(f"{DIM}{'─' * 66}{RESET}")
 
             result = await agent.run_turn(

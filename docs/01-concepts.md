@@ -128,25 +128,25 @@ plans out of.
 
 ```python
 Capability(
-    id="csv.profile",
-    name="Profile a CSV",
+    id="gwas.pca",
+    name="Principal components of ancestry",
     version="1",
-    description="Column types, null counts, cardinality, and statistics.",
-    runner="csv.profile",
+    description="Project samples onto the leading axes of genotype variation.",
+    runner="gwas.pca",
     inputs=(CapabilityInput(
-        key="table", name="Table", description="A CSV with a header row.",
-        allowed_extensions=(".csv",), max_files=1,
+        key="cohort", name="QC'd cohort", description="The genotype matrix to decompose.",
+        allowed_extensions=(".tsv",), max_files=1,
     ),),
-    outputs=(Port(name="profile", artifact_type="json"),),
-    parameters={"top_values": Parameter(
-        type="integer", description="Frequent values per column.",
-        minimum=1, maximum=20, default=5,
+    outputs=(Port(name="components", artifact_type="json"),),
+    parameters={"components": Parameter(
+        type="integer", description="How many principal components to retain.",
+        minimum=1, maximum=10, default=2,
     )},
     max_attempts=3,
     retry_backoff_seconds=1.0,
     timeout_seconds=120,
     requires_approval=False,
-    tags=("csv", "profile", "statistics"),
+    tags=("gwas", "pca", "ancestry", "population-structure"),
 )
 ```
 
@@ -159,11 +159,11 @@ server-side validation the broker runs, and the execution graph the engine runs.
 `input_variants` declares which *combinations* are acceptable:
 
 ```python
-input_variants=(("bed", "bim"), ("vcf",))
+input_variants=(("bed", "bim", "fam"), ("vcf",))
 ```
 
-A PLINK pair, or a VCF. Supplying `bed` alone is refused; supplying all three is
-refused. Without this, "optional inputs" degrade into an untyped bag and the
+A PLINK triple, or a VCF. Supplying `bed` alone is refused; supplying a triple
+*and* a VCF is refused. Without this, "optional inputs" degrade into an untyped bag and the
 runner ends up re-validating by hand.
 
 ### Execution policy
@@ -181,19 +181,23 @@ procedure you want offered as one unit.
 
 ```python
 Workflow(
-    id="csv.quality_sop",
-    name="Standard CSV quality review",
-    description="The fixed clean → (profile ‖ outliers) → report pipeline.",
-    inputs=(CapabilityInput(key="table", name="Table", description="The CSV."),),
+    id="gwas.structured_scan",
+    name="Structure-aware association scan",
+    description="QC, then ancestry ‖ relatedness, then a kinship-corrected scan.",
+    inputs=(CapabilityInput(key="vcf", name="VCF", description="The cohort to scan."),),
     nodes=(
-        WorkflowNode(id="clean", name="Clean", runner="csv.clean", inputs=("table",),
-                     outputs=(Port(name="cleaned", artifact_type="csv"),)),
-        WorkflowNode(id="profile", name="Profile", runner="csv.profile",
-                     depends_on=("clean",), outputs=(Port(name="profile", artifact_type="json"),)),
-        WorkflowNode(id="outliers", name="Outliers", runner="csv.outliers",
-                     depends_on=("clean",), outputs=(Port(name="outliers", artifact_type="json"),)),
-        WorkflowNode(id="report", name="Report", runner="csv.report",
-                     depends_on=("profile", "outliers")),
+        WorkflowNode(id="qc", name="Quality control", runner="gwas.qc", inputs=("vcf",),
+                     outputs=(Port(name="cohort", artifact_type="tsv"),
+                              Port(name="qc_report", artifact_type="json"))),
+        # Same single dependency, no edge between them: the engine runs these
+        # two concurrently. The SOP author never opts in to parallelism.
+        WorkflowNode(id="pca", name="Ancestry axes", runner="gwas.pca",
+                     depends_on=("qc",), outputs=(Port(name="components", artifact_type="json"),)),
+        WorkflowNode(id="kinship", name="Relatedness", runner="gwas.kinship",
+                     depends_on=("qc",), outputs=(Port(name="grm", artifact_type="json"),)),
+        WorkflowNode(id="assoc", name="Association scan", runner="gwas.associate",
+                     depends_on=("qc", "pca", "kinship"),
+                     outputs=(Port(name="stats", artifact_type="json"),)),
     ),
 )
 ```

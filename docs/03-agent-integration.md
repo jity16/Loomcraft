@@ -235,7 +235,7 @@ agent = ScriptedAgent(
     [
         ("session_context", {}),
         ("publish_plan", {"plan": plan}),
-        ("run_capability", {"capability_id": "csv.clean", "step_id": "clean",
+        ("run_capability", {"capability_id": "gwas.qc", "step_id": "clean",
                             "inputs": {"table": "upload:u1"}}),
     ],
     final_text="Done.",

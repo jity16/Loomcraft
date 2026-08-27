@@ -17,12 +17,12 @@ The UI draws it — live.
 
 <br>
 
-<img src="assets/dag-execution.svg" width="820"
-     alt="An animated LoomCraft plan running: clean succeeds, profile and outliers are dispatched together because neither depends on the other, outliers fails and is retried with backoff, report fans in once both parents succeed, and answer completes the plan.">
+<img src="assets/plan-execution.svg" width="820"
+     alt="The LoomCraft workbench rendering revision 2 of an association study: quality control succeeds, ancestry axes and the relatedness matrix are dispatched together because neither depends on the other, the structure-aware scan waits for both, and multiple-testing correction follows.">
 
-<sub>Not a mockup — this is the plan in <a href="#plan">Core concepts</a>, with the scheduling
-the engine actually performs.<br>
-Parallel layers, a retry with backoff, a fan-in, and the one step kind the agent may close itself.</sub>
+<sub>The workbench, drawn with the tokens <code>@loomcraft/renderer</code> ships — and a real plan,
+from <a href="examples/01-gwas-discovery/">example 1</a>.<br>
+Revision <b>2</b>, because revision 1 was confounded and the agent noticed: λ = 2.80 → 0.95, eight hits → three.</sub>
 
 </div>
 
@@ -89,24 +89,24 @@ from loomcraft import (
 registry = Registry()
 
 @registry.capability_runner(Capability(
-    id="csv.profile",
-    name="Profile a CSV",
-    description="Column types, null counts, and basic statistics.",
-    runner="csv.profile",
+    id="gwas.kinship",
+    name="Genomic relatedness matrix",
+    description="Realised kinship between every pair of samples, from genotypes.",
+    runner="gwas.kinship",
     inputs=(CapabilityInput(
-        key="table", name="Table", description="A CSV with a header row.",
-        allowed_extensions=(".csv",),
+        key="cohort", name="Cohort", description="A QC'd genotype matrix.",
+        allowed_extensions=(".tsv",),
     ),),
-    outputs=(Port(name="profile", artifact_type="json"),),
+    outputs=(Port(name="grm", artifact_type="json"),),
     max_attempts=3,              # retry with exponential backoff
     timeout_seconds=120,
-    tags=("csv", "profile", "statistics"),
+    tags=("gwas", "kinship", "relatedness", "mixed-model"),
 ))
-async def profile(ctx: NodeContext) -> NodeResult:
-    text = ctx.input("table").read_text()
-    ctx.progress(0.5, "parsing")
-    ctx.emit("profile", "profile.json", analyse(text))
-    return NodeResult.ok(rows=text.count("\n"))
+async def kinship(ctx: NodeContext) -> NodeResult:
+    cohort = parse(ctx.input("cohort").read_text())
+    ctx.progress(0.5, "standardising markers")
+    ctx.emit("grm", "kinship.json", relatedness(cohort))
+    return NodeResult.ok(samples=len(cohort.samples))
 ```
 
 That is the whole extension point. LoomCraft never imports your domain code —
@@ -118,10 +118,12 @@ you register a contract and an async callable.
 from loomcraft import AnthropicAgent, SessionStore, ToolBroker
 
 session = SessionStore("./data").create()
-session.save_upload("sales.csv", open("sales.csv", "rb"))
+session.save_upload("cohort.vcf", open("cohort.vcf", "rb"))
 
 broker = ToolBroker(session, registry)
-result = await AnthropicAgent().run_turn(broker, "Profile the uploaded table.")
+result = await AnthropicAgent().run_turn(
+    broker, "Which markers are associated with salt tolerance in this cohort?"
+)
 ```
 
 **3 · Serve it and render it.**
@@ -141,8 +143,8 @@ import "@loomcraft/renderer/styles.css";
 **4 · Or run the examples with no API key at all.**
 
 ```bash
-python examples/01-data-pipeline/run_scripted.py
-python examples/02-research-assistant/run_scripted.py
+python examples/01-gwas-discovery/run_scripted.py
+python examples/02-literature-meta/run_scripted.py
 ```
 
 ---
@@ -156,22 +158,30 @@ A versioned DAG the agent publishes through `publish_plan`. Each step has an
 
 ```json
 {
-  "goal": "Assess the quality of the uploaded sales table",
-  "revision": 1,
+  "goal": "Find markers associated with salt tolerance in the uploaded cohort",
+  "revision": 2,
+  "reason": "λ = 2.80 in revision 1 — inflated genome-wide, which is population structure rather than signal",
   "steps": [
-    { "id": "clean",    "kind": "capability", "capability": "csv.clean",    "title": "Clean the table" },
-    { "id": "profile",  "kind": "capability", "capability": "csv.profile",  "title": "Profile columns",  "depends_on": ["clean"] },
-    { "id": "outliers", "kind": "capability", "capability": "csv.outliers", "title": "Detect outliers",  "depends_on": ["clean"] },
-    { "id": "report",   "kind": "capability", "capability": "csv.report",   "title": "Write the report", "depends_on": ["profile", "outliers"] },
-    { "id": "answer",   "kind": "answer",     "title": "Answer the user",   "depends_on": ["report"] }
+    { "id": "qc",      "kind": "capability", "capability": "gwas.qc",        "title": "Quality control" },
+    { "id": "pca",     "kind": "capability", "capability": "gwas.pca",       "title": "Ancestry axes",         "depends_on": ["qc"] },
+    { "id": "kinship", "kind": "capability", "capability": "gwas.kinship",   "title": "Relatedness matrix",    "depends_on": ["qc"] },
+    { "id": "assoc",   "kind": "capability", "capability": "gwas.associate", "title": "Structure-aware scan",  "depends_on": ["qc", "pca", "kinship"] },
+    { "id": "correct", "kind": "capability", "capability": "gwas.correct",   "title": "Multiple testing",      "depends_on": ["assoc"] },
+    { "id": "review",  "kind": "review",     "title": "Check the model is calibrated", "depends_on": ["correct"] },
+    { "id": "answer",  "kind": "answer",     "title": "Report the associated loci",    "depends_on": ["review"] }
   ]
 }
 ```
 
-`profile` and `outliers` both depend only on `clean` and not on each other, so
-the engine runs them **concurrently** — that is the layer lighting up twice at
-once in the animation at the top of this page. Parallelism is a property of the
-graph, never a keyword the plan author has to remember.
+`pca` and `kinship` both depend only on `qc` and not on each other, so the engine
+runs them **concurrently** — that is the layer lighting up twice at once in the
+animation at the top of this page. Parallelism is a property of the graph, never
+a keyword the plan author has to remember.
+
+Note the `reason`. Revision 1 of this plan had no `pca` or `kinship` step at all;
+it went straight from `qc` to a plain per-marker scan. The agent added them
+because its own `review` step read a genomic inflation factor of 2.80 off the
+artifact and concluded the model — not the arithmetic — was wrong.
 
 ### Step kinds
 
@@ -197,13 +207,13 @@ flowchart LR
     ENG -- "status + artifacts" --> LOG[("Event log")]:::log
     AK -- "status" --> LOG
 
-    classDef agent     fill:#2b2150,stroke:#a78bfa,stroke-width:2px,color:#ede9fe
-    classDef selfwrite fill:#1f2937,stroke:#a78bfa,stroke-width:1.5px,color:#e5e7eb
-    classDef servwrite fill:#0f2f3f,stroke:#38bdf8,stroke-width:1.5px,color:#e0f2fe
-    classDef engine    fill:#3a2c0a,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
-    classDef log       fill:#0f3b2e,stroke:#34d399,stroke-width:2px,color:#d1fae5
+    classDef agent     fill:#f6f3fb,stroke:#6d5bb5,stroke-width:2px,color:#1a2332
+    classDef selfwrite fill:#ffffff,stroke:#6d5bb5,stroke-width:1.5px,color:#1a2332
+    classDef servwrite fill:#eef4fa,stroke:#1661ab,stroke-width:1.5px,color:#1a2332
+    classDef engine    fill:#fbf6e9,stroke:#a8864b,stroke-width:2px,color:#1a2332
+    classDef log       fill:#f0f6ef,stroke:#4a7d5b,stroke-width:2px,color:#1a2332
 
-    linkStyle 2 stroke:#fb7185,color:#fb7185
+    linkStyle 2 stroke:#c03030,color:#c03030
 ```
 
 The dotted edge is the whole point: an agent can *ask* to mark a `capability`
@@ -228,11 +238,11 @@ stateDiagram-v2
     skipped   --> running   : a replan unblocked it
     succeeded --> [*]
 
-    classDef pend fill:#1f2937,stroke:#64748b,stroke-width:1.5px,color:#e5e7eb
-    classDef run  fill:#3a2c0a,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
-    classDef ok   fill:#0f3b2e,stroke:#34d399,stroke-width:2px,color:#d1fae5
-    classDef bad  fill:#3f1524,stroke:#fb7185,stroke-width:2px,color:#ffe4e6
-    classDef skip fill:#1e293b,stroke:#475569,stroke-width:1.5px,color:#cbd5e1
+    classDef pend fill:#ffffff,stroke:#9aa2af,stroke-width:1.5px,color:#1a2332
+    classDef run  fill:#eef4fa,stroke:#1661ab,stroke-width:2px,color:#1a2332
+    classDef ok   fill:#f2f4e9,stroke:#6b7a3a,stroke-width:2px,color:#1a2332
+    classDef bad  fill:#faeceb,stroke:#c03030,stroke-width:2px,color:#1a2332
+    classDef skip fill:#f7f4ec,stroke:#b9b0a0,stroke-width:1.5px,color:#1a2332
 
     class pending pend
     class running run
@@ -285,15 +295,15 @@ flowchart LR
         CTL["<b>control/</b><br/>plan · event log · cursor"]:::ctl
     end
 
-    classDef user   fill:#0f3b2e,stroke:#34d399,stroke-width:2px,color:#d1fae5
-    classDef agent  fill:#2b2150,stroke:#a78bfa,stroke-width:2px,color:#ede9fe
+    classDef user   fill:#f0f6ef,stroke:#4a7d5b,stroke-width:2px,color:#1a2332
+    classDef agent  fill:#f6f3fb,stroke:#6d5bb5,stroke-width:2px,color:#1a2332
     classDef engine fill:#3a2c0a,stroke:#fbbf24,stroke-width:2px,color:#fef3c7
-    classDef up     fill:#0f3b2e,stroke:#34d399,stroke-width:1.5px,color:#d1fae5
-    classDef art    fill:#0f2f3f,stroke:#38bdf8,stroke-width:1.5px,color:#e0f2fe
-    classDef scr    fill:#1f2937,stroke:#a78bfa,stroke-width:1.5px,color:#e5e7eb
-    classDef ctl    fill:#3f1524,stroke:#fb7185,stroke-width:2px,color:#ffe4e6
+    classDef up     fill:#f0f6ef,stroke:#4a7d5b,stroke-width:1.5px,color:#1a2332
+    classDef art    fill:#eef4fa,stroke:#1661ab,stroke-width:1.5px,color:#1a2332
+    classDef scr    fill:#f6f3fb,stroke:#6d5bb5,stroke-width:1.5px,color:#1a2332
+    classDef ctl    fill:#faeceb,stroke:#c03030,stroke-width:2px,color:#1a2332
 
-    linkStyle 5 stroke:#fb7185,color:#fb7185
+    linkStyle 5 stroke:#c03030,color:#c03030
 ```
 
 Every arrow above is checked on **every** resolution, not once at registration:

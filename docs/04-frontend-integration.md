@@ -407,7 +407,7 @@ client.streamEvents(sessionId, (event) => {
 ```
 
 For a plain-JavaScript port with no build step at all, see
-[`examples/01-data-pipeline/web/index.html`](../examples/01-data-pipeline/web/index.html)
+[`examples/01-gwas-discovery/web/index.html`](../examples/01-gwas-discovery/web/index.html)
 — a single file that reimplements the reducer and layout in ~150 lines, which is
 a useful measure of how small the front-end contract is.
 

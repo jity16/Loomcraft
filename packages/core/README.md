@@ -20,22 +20,22 @@ from loomcraft import (
 registry = Registry()
 
 @registry.capability_runner(Capability(
-    id="csv.profile",
-    name="Profile a CSV",
-    description="Column types, null counts, and basic statistics.",
-    runner="csv.profile",
-    inputs=(CapabilityInput(key="table", name="Table",
-                            description="A CSV with a header row.",
-                            allowed_extensions=(".csv",)),),
-    outputs=(Port(name="profile", artifact_type="json"),),
+    id="gwas.pca",
+    name="Principal components of ancestry",
+    description="Project samples onto the leading axes of genotype variation.",
+    runner="gwas.pca",
+    inputs=(CapabilityInput(key="cohort", name="Cohort",
+                            description="A QC'd genotype matrix.",
+                            allowed_extensions=(".tsv",)),),
+    outputs=(Port(name="components", artifact_type="json"),),
 ))
-async def profile(ctx: NodeContext) -> NodeResult:
-    ctx.emit("profile", "profile.json", analyse(ctx.input("table").read_text()))
+async def pca(ctx: NodeContext) -> NodeResult:
+    ctx.emit("components", "pca.json", decompose(ctx.input("cohort").read_text()))
     return NodeResult.ok()
 
 session = SessionStore("./data").create()
 broker = ToolBroker(session, registry)
-await AnthropicAgent().run_turn(broker, "Profile the uploaded table.")
+await AnthropicAgent().run_turn(broker, "Find markers associated with salt tolerance.")
 ```
 
 Full documentation: <https://github.com/jity16/Loomcraft/tree/main/docs>

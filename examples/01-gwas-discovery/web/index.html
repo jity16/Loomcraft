@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>LoomCraft · CSV quality</title>
+    <title>LoomCraft · association study</title>
     <!--
       A dependency-free demo of the LoomCraft front-end contract.
 
@@ -23,15 +23,20 @@
       instead of copying them.
     -->
     <style>
+      /* The same tokens @loomcraft/renderer ships, inlined. Warm paper for the
+         chrome, a cool grey pane for the graph, one green for identity and one
+         blue that only ever means "running". */
       :root {
-        --canvas: #f7f8fa; --surface: #fff; --sunken: #f1f3f6;
-        --hair: #e7eaef; --line: #d9dee6;
-        --ink: #1a2029; --ink2: #47505d; --ink3: #6b7686;
-        --accent: #3f5bd9; --accent-wash: #eef1fd;
-        --run: #2f6fd0; --run-wash: #e9f1fb;
-        --ok: #24734f; --ok-wash: #e8f4ee;
-        --err: #c03434; --err-wash: #fbeced;
-        --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --canvas: #fdfcf8; --surface: #fff; --sunken: #f7f4ec;
+        --hair: #efece3; --line: #e8e4d9;
+        --graph-canvas: #f7f8fa; --graph-dot: #d8dce4;
+        --ink: #1a2332; --ink2: #3a4556; --ink3: #687181;
+        --accent: #4a7d5b; --accent-wash: #edf3ef;
+        --run: #1661ab; --run-wash: #e9f0f9;
+        --ok: #6b7a3a; --ok-wash: #f2f4e9;
+        --err: #c03030; --err-wash: #faeceb;
+        --edge: #9aa2af; --edge-active: #2f6fd0; --edge-done: #24734f;
+        --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       }
       * { box-sizing: border-box; }
       body {
@@ -53,8 +58,8 @@
       .phase[data-phase="completed"] { color: var(--ok); background: var(--ok-wash); }
       main { flex: 1; display: grid; grid-template-columns: 1fr 360px; min-height: 0; }
       #canvas {
-        position: relative; overflow: hidden; background-color: var(--canvas);
-        background-image: radial-gradient(circle at 1px 1px, var(--line) 1px, transparent 0);
+        position: relative; overflow: hidden; background-color: var(--graph-canvas);
+        background-image: radial-gradient(circle at 1px 1px, var(--graph-dot) 1px, transparent 0);
         background-size: 20px 20px;
       }
       #stage { position: absolute; transform-origin: 0 0; }
@@ -62,17 +67,29 @@
         position: absolute; width: 224px; height: 92px; padding: 10px 12px;
         display: flex; flex-direction: column; gap: 4px;
         background: var(--surface); border: 1px solid var(--line);
-        border-radius: 10px; font-size: 13px;
+        border-radius: 12px; font-size: 13px;
       }
-      .node[data-status="running"]   { background: var(--run-wash); border-color: #9dbde6; }
-      .node[data-status="succeeded"] { background: var(--ok-wash);  border-color: #9ac4ae; }
-      .node[data-status="failed"]    { background: var(--err-wash); border-color: #e0a0a0; }
+      /* Fills stay a whisper off the surface: the border and dot carry status,
+         so a canvas of twenty nodes stays scannable. */
+      .node[data-status="running"] {
+        background: color-mix(in srgb, var(--run) 3.5%, var(--surface));
+        border-color: color-mix(in srgb, var(--run) 25%, transparent);
+        box-shadow: 0 0 0 3px color-mix(in srgb, var(--run) 6%, transparent);
+      }
+      .node[data-status="succeeded"] {
+        background: color-mix(in srgb, var(--ok) 2.5%, var(--surface));
+        border-color: color-mix(in srgb, var(--ok) 25%, transparent);
+      }
+      .node[data-status="failed"] {
+        background: color-mix(in srgb, var(--err) 3.5%, var(--surface));
+        border-color: color-mix(in srgb, var(--err) 25%, transparent);
+      }
       .node[data-status="skipped"]   { background: var(--sunken); opacity: .65; }
       .node .title { font-weight: 600; line-height: 1.3; }
       .node .meta  { font-family: var(--mono); font-size: 10px; color: var(--ink3); }
       .node .foot  { margin-top: auto; display: flex; gap: 6px; align-items: center;
                      font-size: 10px; font-weight: 600; color: var(--ink3); }
-      .dot { width: 7px; height: 7px; border-radius: 50%; background: #9aa2af; }
+      .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink3); }
       .dot[data-status="running"]   { background: var(--run); animation: pulse 1.4s infinite; }
       .dot[data-status="succeeded"] { background: var(--ok); }
       .dot[data-status="failed"]    { background: var(--err); }
@@ -106,16 +123,16 @@
       button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
       button:disabled { opacity: .55; cursor: not-allowed; }
       .empty { color: var(--ink3); font-size: 12px; margin: 0; }
-      svg .edge { fill: none; stroke: var(--line); stroke-width: 1.6; }
-      svg .edge[data-tone="active"] { stroke: var(--run); stroke-width: 2.2;
+      svg .edge { fill: none; stroke: var(--edge); stroke-width: 1.6; }
+      svg .edge[data-tone="active"] { stroke: var(--edge-active); stroke-width: 2.2;
         stroke-dasharray: 6 5; animation: flow .9s linear infinite; }
-      svg .edge[data-tone="done"] { stroke: var(--ok); }
+      svg .edge[data-tone="done"] { stroke: var(--edge-done); stroke-width: 1.8; }
       @keyframes flow { to { stroke-dashoffset: -22; } }
     </style>
   </head>
   <body>
     <header>
-      <h1>LoomCraft · CSV quality</h1>
+      <h1>LoomCraft · association study</h1>
       <span class="phase" id="phase" data-phase="idle">idle</span>
       <span id="session" style="font-family: var(--mono); font-size: 11px; color: var(--ink3)"></span>
     </header>
@@ -143,7 +160,7 @@
         Attach
         <input type="file" id="file" multiple hidden />
       </label>
-      <input type="text" id="message" placeholder="Assess the quality of the uploaded table." />
+      <input type="text" id="message" placeholder="Find markers associated with salt tolerance in this cohort." />
       <button type="submit" class="primary" id="send">Send</button>
     </form>
 

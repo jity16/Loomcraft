@@ -29,7 +29,7 @@ replan. This is the reference for what the server will and will not accept.
       "title": "Clean the table",     // 1–160 chars
       "kind": "capability",           // answer|capability|workflow|dynamic|review
       "depends_on": [],               // ≤24 step ids, must all exist
-      "capability": "csv.clean",      // required iff kind is capability|workflow
+      "capability": "gwas.qc",      // required iff kind is capability|workflow
       "description": ""               // ≤1000 chars, optional
     }
   ]
@@ -85,7 +85,7 @@ validate_plan({"goal": "g", "revision": 1, "steps": [
 - Every other kind **must not**.
 
 ```python
-{"id": "a", "title": "A", "kind": "dynamic", "capability": "csv.clean"}
+{"id": "a", "title": "A", "kind": "dynamic", "capability": "gwas.qc"}
 # PlanValidationError: dynamic step cannot declare a capability
 ```
 
@@ -96,7 +96,7 @@ catalog at publish time:
 
 ```python
 validate_plan(plan, current, registry=registry)
-# PlanValidationError: run: unknown capability 'csv.profil'
+# PlanValidationError: assoc: unknown capability 'gwas.associat'
 ```
 
 `ToolBroker` always does this. Catching a typo at publish time turns a
@@ -178,13 +178,13 @@ ensure_dependencies_succeeded(plan, "report")
 `ensure_step_startable` bundles the full precondition set used before execution:
 
 ```python
-ensure_step_startable(plan, "clean", kind="capability", capability="csv.clean")
+ensure_step_startable(plan, "qc", kind="capability", capability="gwas.qc")
 ```
 
 1. The step exists.
 2. Its `kind` matches.
-3. Its `capability` matches — an agent cannot point a `csv.clean` step at
-   `csv.delete_everything`.
+3. Its `capability` matches — an agent cannot point a `gwas.qc` step at
+   `admin.delete_everything`.
 4. Dependencies have all succeeded.
 5. Status is `pending` — it has not already run.
 
@@ -256,9 +256,9 @@ repeating a dead end.
 
 | ✗ Weak | ✓ Useful |
 | --- | --- |
-| "Adjusting the plan" | "The reference service returned 503 on all three attempts; proceeding without external thresholds." |
-| "Step failed, trying again" | "`csv.clean` failed because the upload has no header row. Adding an explicit header-inference step first." |
-| "Changed approach" | "The corpus is one document, so contradiction analysis cannot run. Replacing it with a single-source brief and an explicit caveat." |
+| "Adjusting the plan" | "The gene catalogue returned 503 on all three attempts; reporting the loci without annotation." |
+| "Step failed, trying again" | "`gwas.qc` dropped every marker at MAF ≥ 0.05. Re-running QC at 0.01 and recording the looser threshold in the summary." |
+| "Changed approach" | "λ = 2.80 in revision 1: the statistics are inflated genome-wide, which is population structure rather than signal. Adding ancestry axes and a relatedness matrix, and rescanning with a mixed model." |
 
 State **what was learned** and **what changes because of it**.
 
