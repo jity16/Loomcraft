@@ -514,8 +514,27 @@ Returns: `state`, `busy`, `phase`, `visiblePlan`, `selectedRevision`,
 
 ### CSS custom properties
 
-`--lc-canvas`, `--lc-surface`, `--lc-sunken`, `--lc-hairline`, `--lc-line`,
-`--lc-ink`, `--lc-ink-2`, `--lc-ink-3`, `--lc-accent`, `--lc-accent-wash`,
-`--lc-run`, `--lc-run-wash`, `--lc-ok`, `--lc-ok-wash`, `--lc-warn`, `--lc-err`,
-`--lc-err-wash`, `--lc-idle`, `--lc-radius`, `--lc-radius-sm`, `--lc-shadow`,
-`--lc-font`, `--lc-mono`.
+| Group | Tokens |
+| --- | --- |
+| Chrome surfaces | `--lc-canvas`, `--lc-surface`, `--lc-sunken`, `--lc-hairline`, `--lc-line` |
+| Graph pane | `--lc-graph-canvas`, `--lc-graph-dot` |
+| Text | `--lc-ink`, `--lc-ink-2`, `--lc-ink-3` |
+| Status | `--lc-accent`, `--lc-accent-wash`, `--lc-run`, `--lc-run-wash`, `--lc-ok`, `--lc-ok-wash`, `--lc-warn`, `--lc-warn-wash`, `--lc-err`, `--lc-err-wash`, `--lc-idle` |
+| Edges | `--lc-edge`, `--lc-edge-active`, `--lc-edge-done` |
+| Shape | `--lc-radius`, `--lc-radius-sm`, `--lc-shadow`, `--lc-font`, `--lc-mono` |
+
+Two splits in that list are deliberate rather than incidental:
+
+- **Graph pane vs. chrome.** The default theme puts warm paper behind the
+  chrome and a cool grey behind the DAG, so the canvas reads as a surface set
+  into the page rather than another sheet of the same paper. Set
+  `--lc-graph-canvas` to `var(--lc-canvas)` if you want them flush.
+- **Edges vs. status.** A stroke is one or two pixels wide and has to keep its
+  meaning at 40% zoom, so `--lc-edge-active` / `--lc-edge-done` run more
+  saturated than the `--lc-run` / `--lc-ok` used for node chrome. Point them at
+  the status tokens if you would rather have exactly one green.
+
+Node fills are derived, not tokens: each status fill is `color-mix` of its
+status colour at 2.5–3.5% over `--lc-surface`. The border and the status dot
+carry the state; a saturated fill per status turns a twenty-node canvas into a
+patchwork and makes the titles harder to scan.

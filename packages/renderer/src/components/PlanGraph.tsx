@@ -298,8 +298,12 @@ export function PlanGraph({
                   viewBox="0 0 10 10"
                   refX="9"
                   refY="5"
-                  markerWidth="7"
-                  markerHeight="7"
+                  markerWidth="9"
+                  markerHeight="9"
+                  // Without this, marker size scales with stroke-width, so the
+                  // 2.2px "active" edge grows an arrowhead twice the size of
+                  // every other one and the canvas reads as broken.
+                  markerUnits="userSpaceOnUse"
                   orient="auto-start-reverse"
                 >
                   <path d="M 0 0 L 10 5 L 0 10 z" className={`lc-arrow lc-arrow--${tone}`} />

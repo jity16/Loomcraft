@@ -12,72 +12,117 @@
 .lc-workbench,
 .lc-graph,
 .lc-panel {
-  /* ── Surfaces ── */
-  --lc-canvas: #f7f8fa;
+  /* ── Surfaces — warm paper carries the chrome ─────────────────────────
+     Warm neutrals (a hint of yellow) rather than the usual blue-grey: long
+     analytical sessions sit on this background, and paper is easier to read
+     against for an hour than a cool screen-grey is. */
+  --lc-canvas: #fdfcf8;
   --lc-surface: #ffffff;
-  --lc-sunken: #f1f3f6;
-  --lc-hairline: #e7eaef;
-  --lc-line: #d9dee6;
+  --lc-sunken: #f7f4ec;
+  --lc-hairline: #efece3;
+  --lc-line: #e8e4d9;
 
-  /* ── Text ── */
-  --lc-ink: #1a2029;
-  --lc-ink-2: #47505d;
-  --lc-ink-3: #6b7686;
+  /* The DAG pane is deliberately *cool* where the chrome is warm — it reads
+     as a workbench surface set into the page rather than another sheet. */
+  --lc-graph-canvas: #f7f8fa;
+  --lc-graph-dot: #d8dce4;
 
-  /* ── Status ── */
-  --lc-accent: #3f5bd9;
-  --lc-accent-wash: #eef1fd;
-  --lc-run: #2f6fd0;
-  --lc-run-wash: #e9f1fb;
-  --lc-ok: #24734f;
-  --lc-ok-wash: #e8f4ee;
-  --lc-warn: #a8752b;
-  --lc-err: #c03434;
-  --lc-err-wash: #fbeced;
-  --lc-idle: #9aa2af;
+  /* ── Ink ── */
+  --lc-ink: #1a2332;
+  --lc-ink-2: #3a4556;
+  --lc-ink-3: #687181;
+
+  /* ── Status ─────────────────────────────────────────────────────────────
+     One green for identity and selection, one blue that means *running* and
+     nothing else. Keeping "brand" and "in flight" on different hues is what
+     lets a glance at the canvas answer "is anything moving right now?". */
+  --lc-accent: #4a7d5b;
+  --lc-accent-wash: #edf3ef;
+  --lc-run: #1661ab;
+  --lc-run-wash: #e9f0f9;
+  --lc-ok: #6b7a3a;
+  --lc-ok-wash: #f2f4e9;
+  --lc-warn: #a8864b;
+  --lc-warn-wash: #f7f1e6;
+  --lc-err: #c03030;
+  --lc-err-wash: #faeceb;
+  --lc-idle: #687181;
+
+  /* Edges are tuned separately from node chrome. A stroke is one or two
+     pixels wide and has to hold its meaning at 40% zoom, so it runs more
+     saturated than the fill of the node it points at. */
+  --lc-edge: #9aa2af;
+  --lc-edge-active: #2f6fd0;
+  --lc-edge-done: #24734f;
 
   /* ── Shape ── */
-  --lc-radius: 10px;
+  --lc-radius: 12px;
   --lc-radius-sm: 6px;
-  --lc-shadow: 0 10px 30px -22px rgb(20 28 40 / 55%);
-  --lc-font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-  --lc-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --lc-shadow: 0 12px 28px -22px rgb(24 27 33 / 55%);
+  --lc-font: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  --lc-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   .lc-workbench,
   .lc-graph,
   .lc-panel {
-    --lc-canvas: #12151a;
-    --lc-surface: #1a1e25;
-    --lc-sunken: #21262e;
-    --lc-hairline: #2a3039;
-    --lc-line: #39414d;
-    --lc-ink: #e8ecf2;
-    --lc-ink-2: #b6bfcc;
-    --lc-ink-3: #8b95a4;
-    --lc-accent-wash: #1e2438;
-    --lc-run-wash: #16233a;
-    --lc-ok-wash: #14261e;
-    --lc-err-wash: #2c1a1c;
+    --lc-canvas: #14161a;
+    --lc-surface: #1b1e24;
+    --lc-sunken: #23262d;
+    --lc-hairline: #2b2f37;
+    --lc-line: #3a3f49;
+    --lc-graph-canvas: #101317;
+    --lc-graph-dot: #2b303a;
+    --lc-ink: #ecebe6;
+    --lc-ink-2: #b9bcc4;
+    --lc-ink-3: #8b929e;
+    /* The soft variants of the same two hues — a hue that reads as "running"
+       on paper is too dark to read as anything on a dark canvas. */
+    --lc-accent: #7fa18a;
+    --lc-accent-wash: #1b2721;
+    --lc-run: #5a8fc8;
+    --lc-run-wash: #14202e;
+    --lc-ok: #9aa862;
+    --lc-ok-wash: #1e2216;
+    --lc-warn: #c9a367;
+    --lc-warn-wash: #262017;
+    --lc-err: #e06a6a;
+    --lc-err-wash: #2b1a1a;
+    --lc-idle: #8b929e;
+    --lc-edge: #4d545f;
+    --lc-edge-active: #5a8fc8;
+    --lc-edge-done: #6fa588;
   }
 }
 
 [data-lc-theme="dark"] .lc-workbench,
 [data-lc-theme="dark"] .lc-graph,
 [data-lc-theme="dark"] .lc-panel {
-  --lc-canvas: #12151a;
-  --lc-surface: #1a1e25;
-  --lc-sunken: #21262e;
-  --lc-hairline: #2a3039;
-  --lc-line: #39414d;
-  --lc-ink: #e8ecf2;
-  --lc-ink-2: #b6bfcc;
-  --lc-ink-3: #8b95a4;
-  --lc-accent-wash: #1e2438;
-  --lc-run-wash: #16233a;
-  --lc-ok-wash: #14261e;
-  --lc-err-wash: #2c1a1c;
+  --lc-canvas: #14161a;
+  --lc-surface: #1b1e24;
+  --lc-sunken: #23262d;
+  --lc-hairline: #2b2f37;
+  --lc-line: #3a3f49;
+  --lc-graph-canvas: #101317;
+  --lc-graph-dot: #2b303a;
+  --lc-ink: #ecebe6;
+  --lc-ink-2: #b9bcc4;
+  --lc-ink-3: #8b929e;
+  --lc-accent: #7fa18a;
+  --lc-accent-wash: #1b2721;
+  --lc-run: #5a8fc8;
+  --lc-run-wash: #14202e;
+  --lc-ok: #9aa862;
+  --lc-ok-wash: #1e2216;
+  --lc-warn: #c9a367;
+  --lc-warn-wash: #262017;
+  --lc-err: #e06a6a;
+  --lc-err-wash: #2b1a1a;
+  --lc-idle: #8b929e;
+  --lc-edge: #4d545f;
+  --lc-edge-active: #5a8fc8;
+  --lc-edge-done: #6fa588;
 }
 
 /* ── Utilities ─────────────────────────────────────────────────────────── */
@@ -315,8 +360,8 @@
   min-height: 260px;
   overflow: hidden;
   cursor: grab;
-  background-color: var(--lc-canvas);
-  background-image: radial-gradient(circle at 1px 1px, var(--lc-line) 1px, transparent 0);
+  background-color: var(--lc-graph-canvas);
+  background-image: radial-gradient(circle at 1px 1px, var(--lc-graph-dot) 1px, transparent 0);
   background-size: 20px 20px;
   touch-action: none;
 }
@@ -327,12 +372,12 @@
 
 .lc-graph__edges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
 
-.lc-edge { fill: none; stroke: var(--lc-line); stroke-width: 1.6; }
-.lc-edge--done { stroke: var(--lc-ok); stroke-width: 1.8; }
+.lc-edge { fill: none; stroke: var(--lc-edge); stroke-width: 1.6; }
+.lc-edge--done { stroke: var(--lc-edge-done); stroke-width: 1.8; }
 .lc-edge--long { stroke-dasharray: 5 4; }
 
 .lc-edge--active {
-  stroke: var(--lc-run);
+  stroke: var(--lc-edge-active);
   stroke-width: 2.2;
   stroke-dasharray: 6 5;
   animation: lc-flow 0.9s linear infinite;
@@ -346,9 +391,9 @@
   .lc-edge--active { animation: none; }
 }
 
-.lc-arrow { fill: var(--lc-line); }
-.lc-arrow--active { fill: var(--lc-run); }
-.lc-arrow--done { fill: var(--lc-ok); }
+.lc-arrow { fill: var(--lc-edge); }
+.lc-arrow--active { fill: var(--lc-edge-active); }
+.lc-arrow--done { fill: var(--lc-edge-done); }
 
 .lc-graph__node-slot { position: absolute; }
 
@@ -398,19 +443,24 @@
 
 .lc-node:hover { border-color: var(--lc-ink-3); }
 
+/* Node fills stay a whisper away from the surface colour on purpose. On a
+   canvas of twenty nodes the border and the status dot carry the state; a
+   saturated fill per status turns the graph into a patchwork and makes the
+   *titles* — the thing you are actually reading — harder to scan. */
 .lc-node--running {
-  background: var(--lc-run-wash);
-  border-color: color-mix(in srgb, var(--lc-run) 35%, transparent);
+  background: color-mix(in srgb, var(--lc-run) 3.5%, var(--lc-surface));
+  border-color: color-mix(in srgb, var(--lc-run) 25%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--lc-run) 6%, transparent);
 }
 
 .lc-node--succeeded {
-  background: var(--lc-ok-wash);
-  border-color: color-mix(in srgb, var(--lc-ok) 30%, transparent);
+  background: color-mix(in srgb, var(--lc-ok) 2.5%, var(--lc-surface));
+  border-color: color-mix(in srgb, var(--lc-ok) 25%, transparent);
 }
 
 .lc-node--failed {
-  background: var(--lc-err-wash);
-  border-color: color-mix(in srgb, var(--lc-err) 35%, transparent);
+  background: color-mix(in srgb, var(--lc-err) 3.5%, var(--lc-surface));
+  border-color: color-mix(in srgb, var(--lc-err) 25%, transparent);
 }
 
 .lc-node--skipped { background: var(--lc-sunken); opacity: 0.7; }

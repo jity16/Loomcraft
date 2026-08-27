@@ -267,7 +267,35 @@ assignLayers(plan.steps);   // [["clean"], ["profile", "outliers"], ["report"]]
 
 ## Theming
 
-Every colour is a CSS custom property. Override on any ancestor:
+### The default theme, and why it looks like that
+
+Warm paper for the chrome, cool grey for the DAG pane, one green for identity
+and one blue that means *running* and nothing else:
+
+```
+--lc-canvas       #fdfcf8   paper — the page behind the chrome
+--lc-surface      #ffffff   cards, nodes, panels
+--lc-sunken       #f7f4ec   inset wells, the glyph chip on a node
+--lc-line         #e8e4d9   default rule
+
+--lc-graph-canvas #f7f8fa   the DAG pane — cool, so it reads as inset
+--lc-graph-dot    #d8dce4   the 20px dot grid
+
+--lc-accent       #4a7d5b   identity, selection, replan notices
+--lc-run          #1661ab   in flight — this hue means nothing else
+--lc-ok           #6b7a3a
+--lc-err          #c03030
+```
+
+Keeping "brand" and "in flight" on different hues is what lets a glance at a
+crowded canvas answer *is anything moving right now?* without reading a word.
+The dot grid and the cool pane are load-bearing too: they mark where the
+zoomable surface starts, so a half-scrolled graph never looks like a broken
+page.
+
+### Overriding it
+
+Every colour is a custom property. Override on any ancestor:
 
 ```css
 .my-app .lc-workbench {
@@ -275,13 +303,18 @@ Every colour is a CSS custom property. Override on any ancestor:
   --lc-ok: #059669;
   --lc-run: #0284c7;
   --lc-err: #dc2626;
-  --lc-surface: #ffffff;
-  --lc-canvas: #fafafa;
+  --lc-canvas: #ffffff;
+  --lc-graph-canvas: var(--lc-canvas);   /* flush instead of inset */
+  --lc-edge-active: var(--lc-run);       /* one blue instead of two */
   --lc-radius: 12px;
   --lc-font: "Inter", system-ui, sans-serif;
   --lc-mono: "JetBrains Mono", ui-monospace, monospace;
 }
 ```
+
+Node fills are not tokens — each is `color-mix` of its status colour at 2.5–3.5%
+over `--lc-surface`, so retinting `--lc-run` retints the running node with it and
+you never have to keep a fill and a border in sync by hand.
 
 Dark mode follows `prefers-color-scheme` and can be forced with
 `data-lc-theme="dark"` on any ancestor.
