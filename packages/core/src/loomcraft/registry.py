@@ -369,7 +369,7 @@ class Capability(BaseModel):
     runner: str = Field(pattern=ID_PATTERN)
     inputs: tuple[CapabilityInput, ...] = ()
     #: Accepted combinations of input keys. Exactly one must match at call time,
-    #: which is how a capability offers "PLINK bundle *or* VCF" without letting
+    #: which is how a capability offers "binary bundle *or* VCF" without letting
     #: the agent supply half of each.
     input_variants: tuple[tuple[str, ...], ...] = ()
     outputs: tuple[Port, ...] = ()
