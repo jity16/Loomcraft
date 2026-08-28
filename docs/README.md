@@ -16,7 +16,7 @@ implementation scratch files are intentionally kept outside the release tree.
 ## Reading paths
 
 **"I want to try it."** → [README quick start](../README.md#quick-start), then
-`python examples/00-workbench-tour/run.py` for the compact fan-out/fan-in tour.
+`python examples/00-workbench-tour/run.py` for the fan-out/fan-in/fan-out tour.
 Use `python examples/01-gwas-discovery/run_scripted.py` for the full re-planning
 scenario.
 

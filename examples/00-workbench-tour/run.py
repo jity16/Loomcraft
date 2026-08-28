@@ -4,8 +4,9 @@
     python examples/00-workbench-tour/run.py
 
 The example deliberately looks like a real analysis plan: one normalisation
-step fans out into three independent branches, each branch is checked, and the
-results fan back in to a report.  It runs entirely offline and uses the same
+step fans out into three preparations, their evidence is assembled once, then
+three independent analysis lanes are checked and reviewed before the results
+fan back in to a report. It runs entirely offline and uses the same
 ``publish_plan`` / ``execute_plan`` path a model would use.
 """
 
@@ -59,6 +60,9 @@ ANALYSIS_INPUT = (
         name="Analysis input",
         description="One prepared analysis input.",
         allowed_extensions=(".json",),
+        # The assembler emits ``model_context``; keep the local runner API
+        # named ``analysis`` while preserving the port-level contract.
+        port_name="model_context",
     ),
 )
 STATS_INPUT = (
@@ -76,6 +80,14 @@ QC_INPUT = (
         description="Quality-check outputs from the analysis branches.",
         allowed_extensions=(".json",),
         max_files=3,
+    ),
+)
+REPORT_INPUT = (
+    CapabilityInput(
+        key="review",
+        name="Reviewed evidence",
+        description="The server-owned review output.",
+        allowed_extensions=(".json",),
     ),
 )
 
@@ -153,7 +165,10 @@ def make_scan(
     async def runner(ctx: NodeContext) -> NodeResult:
         async def work() -> NodeResult:
             ctx.input("analysis").read_bytes()
-            await asyncio.sleep(0.12 if not flaky else 0.04)
+            # Keep the window long enough to make the overlap visible in a
+            # terminal. The flaky lane still spends its first attempt in the
+            # same parallel layer before retrying.
+            await asyncio.sleep(0.24 if not flaky else 0.12)
             if flaky and ctx.attempt == 1:
                 return NodeResult.retry("the statistics mirror returned 503")
             ctx.emit("stats", filename, '{"status": "computed"}')
@@ -217,6 +232,26 @@ async def compose_report(ctx: NodeContext) -> NodeResult:
     return await timed(ctx, work)
 
 
+async def assemble_model_context(ctx: NodeContext) -> NodeResult:
+    async def work() -> NodeResult:
+        inputs = ctx.input_list("analysis")
+        await asyncio.sleep(0.08)
+        ctx.emit("model_context", "model-context.json", '{"inputs": 3}')
+        return NodeResult.ok(summary=f"assembled {len(inputs)} analysis inputs")
+
+    return await timed(ctx, work)
+
+
+async def review_evidence(ctx: NodeContext) -> NodeResult:
+    async def work() -> NodeResult:
+        checks = ctx.input_list("qc")
+        await asyncio.sleep(0.06)
+        ctx.emit("review", "review.json", '{"checks": 3, "status": "pass"}')
+        return NodeResult.ok(summary=f"reviewed {len(checks)} branch checks")
+
+    return await timed(ctx, work)
+
+
 make_preparer(
     "genotype.plink_pca", "Population structure", "pca.json", "ancestry axes prepared"
 )
@@ -243,11 +278,41 @@ make_qc("gwas.qc_depth", "QC · depth", "qc-depth.json", "depth calibrated")
 make_qc("gwas.qc_height", "QC · height", "qc-height.json", "height calibrated")
 register(
     Capability(
+        id="analysis.model_context",
+        name="Assemble model inputs",
+        description="Bring the three prepared inputs into one model context.",
+        runner="analysis.model_context",
+        inputs=(
+            CapabilityInput(
+                key="analysis",
+                name="Prepared inputs",
+                description="Prepared inputs from the parallel preparation layer.",
+                allowed_extensions=(".json",),
+                max_files=3,
+            ),
+        ),
+        outputs=(Port(name="model_context", artifact_type="json"),),
+    ),
+    assemble_model_context,
+)
+register(
+    Capability(
+        id="review.evidence",
+        name="Review evidence",
+        description="Check all branch results before the report is composed.",
+        runner="review.evidence",
+        inputs=QC_INPUT,
+        outputs=(Port(name="review", artifact_type="json"),),
+    ),
+    review_evidence,
+)
+register(
+    Capability(
         id="report.compose",
         name="Compose report",
         description="Combine the branch checks into a markdown report.",
         runner="report.compose",
-        inputs=QC_INPUT,
+        inputs=REPORT_INPUT,
         outputs=(Port(name="report", artifact_type="markdown"),),
         requires_approval=True,
     ),
@@ -269,7 +334,7 @@ register(
 def plan(upload_ref: str) -> dict[str, object]:
     return {
         "goal": "Produce a markdown report from the trial dataset.",
-        "summary": "Prepare three independent analyses, check each result, then report.",
+        "summary": "Prepare shared evidence, run three analyses, review each result, then report.",
         "revision": 1,
         "steps": [
             {
@@ -300,25 +365,32 @@ def plan(upload_ref: str) -> dict[str, object]:
                 "depends_on": ["normalize"],
             },
             {
+                "id": "assemble",
+                "title": "Assemble model inputs",
+                "kind": "capability",
+                "capability": "analysis.model_context",
+                "depends_on": ["pca", "phenotype", "kinship"],
+            },
+            {
                 "id": "scan_yield",
                 "title": "GWAS · yield",
                 "kind": "capability",
                 "capability": "gwas.scan_yield",
-                "depends_on": ["pca"],
+                "depends_on": ["assemble"],
             },
             {
                 "id": "scan_depth",
                 "title": "GWAS · depth",
                 "kind": "capability",
                 "capability": "gwas.scan_depth",
-                "depends_on": ["phenotype"],
+                "depends_on": ["assemble"],
             },
             {
                 "id": "scan_height",
                 "title": "GWAS · height",
                 "kind": "capability",
                 "capability": "gwas.scan_height",
-                "depends_on": ["kinship"],
+                "depends_on": ["assemble"],
             },
             {
                 "id": "qc_yield",
@@ -342,11 +414,18 @@ def plan(upload_ref: str) -> dict[str, object]:
                 "depends_on": ["scan_height"],
             },
             {
+                "id": "review",
+                "title": "Review evidence",
+                "kind": "review",
+                "capability": "review.evidence",
+                "depends_on": ["qc_yield", "qc_depth", "qc_height"],
+            },
+            {
                 "id": "report",
                 "title": "Compose report",
                 "kind": "capability",
                 "capability": "report.compose",
-                "depends_on": ["qc_yield", "qc_depth", "qc_height"],
+                "depends_on": ["review"],
             },
         ],
         "metadata": {"upload_ref": upload_ref},
@@ -354,7 +433,10 @@ def plan(upload_ref: str) -> dict[str, object]:
 
 
 def overlap(node_ids: list[str]) -> float:
-    intervals = [spans[node_id][0] for node_id in node_ids]
+    # A retry creates more than one span; report the final attempt for the
+    # analysis window so the overlap measures the successful work, not the
+    # deliberately failed probe.
+    intervals = [spans[node_id][-1] for node_id in node_ids]
     return max(
         0.0, min(end for _, end in intervals) - max(start for start, _ in intervals)
     )
@@ -399,7 +481,7 @@ async def main() -> int:
         parsed = session.current_plan()
         assert parsed is not None
         layers = parse_plan(parsed).layers
-        print("revision 1 · 11 steps")
+        print("revision 1 · 13 steps")
         for index, layer in enumerate(layers):
             print(f"layer {index}  {' + '.join(layer)}")
         print()
@@ -414,6 +496,10 @@ async def main() -> int:
         print(
             "parallel window  pca, phenotype, kinship  "
             f"overlap={overlap(['pca', 'phenotype', 'kinship']):.2f}s"
+        )
+        print(
+            "parallel window  scan.yield, scan.depth, scan.height  "
+            f"overlap={overlap(['scan_yield', 'scan_depth', 'scan_height']):.2f}s"
         )
         depth = next(
             step
@@ -432,7 +518,7 @@ async def main() -> int:
             step["id"]: step["status"] for step in session.current_plan()["steps"]
         }
         print(
-            f"run              {final['status']}                {sum(status == 'succeeded' for status in statuses.values())}/11 nodes accounted for"
+            f"run              {final['status']}                {sum(status == 'succeeded' for status in statuses.values())}/13 nodes accounted for"
         )
         print(f"report runner    invoked after approval       calls={report_calls}")
         print(

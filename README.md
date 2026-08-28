@@ -15,21 +15,22 @@ it the power to invent what already happened.
 [![tests: 311 passing](https://img.shields.io/badge/tests-311%20passing-34d399?style=flat-square&labelColor=0b1120)](#testing)
 [![license: MIT](https://img.shields.io/badge/license-MIT-f472b6?style=flat-square&labelColor=0b1120)](LICENSE)
 
-[30-second demo](#see-the-graph-in-30-seconds) · [Quick start](#quick-start) · [Architecture](#architecture) · [Docs](docs/) · [Examples](examples/)
+[Agent proposes. Runtime proves.](#agent-proposes-runtime-proves) · [Read the execution graph](#read-the-execution-graph) · [Quick start](#quick-start) · [Docs](docs/) · [Examples](examples/)
 
 <br>
 
 <img src="assets/workbench-tour.svg" width="980"
-     alt="The LoomCraft workbench: a user request and an agent-published plan sit beside an execution graph. One normalization step fans out into population structure, phenotype preparation, and a relatedness matrix; three analysis branches then run independently, each with its own quality check, before a final report. The independent branches are visibly dispatched together.">
+     alt="The LoomCraft workbench: a user request and an agent-published plan sit beside an execution graph. One normalization step fans out into population structure, phenotype preparation, and a relatedness matrix; their evidence is assembled once, then three analysis lanes run independently, each with its own quality check, before a server-owned review and final report. The independent lanes are visibly dispatched together.">
 
-<sub>One plan, one event stream, three branches in flight. The picture is generated from the
-same card geometry and status tokens as <code>@loomcraft/renderer</code>.</sub>
+<sub>One plan, one event stream: three preparations converge into shared evidence, then three
+analysis lanes run side by side. The picture uses the same card geometry and status tokens as
+<code>@loomcraft/renderer</code>.</sub>
 
 </div>
 
 ---
 
-## The idea
+## Agent proposes. Runtime proves.
 
 Most agent SDKs stop at tool calls. Most workflow engines start with a graph that
 was fixed before the user arrived. LoomCraft is the boundary between the two:
@@ -43,7 +44,7 @@ exist and the engine decides what is allowed to run.
 | **Engine** | Dependencies, concurrency, retries, artifacts | A step runs only when its graph preconditions are true. |
 | **Renderer** | A projection of the event log | The UI never guesses state from a chat transcript. |
 
-The distinctive rule is simple:
+The contract has one consequence you can see immediately:
 
 > **Parallelism is a property of the dependency graph, not a prompt keyword.**
 
@@ -52,7 +53,7 @@ engine dispatches all three in the same scheduling pass. If one branch fails,
 the graph records that fact and applies the declared failure policy; it does not
 silently turn an incomplete run into a success.
 
-## See the graph in 30 seconds
+### Run the workbench tour
 
 This is a real, offline run. No API key, network, scientific package, or
 frontend build is required:
@@ -64,25 +65,29 @@ python -m pip install -e packages/core
 python examples/00-workbench-tour/run.py
 ```
 
-The first example publishes an eleven-step plan, prints its dependency layers,
-runs three independent branches concurrently, retries one transient step, and
+The workbench tour publishes a thirteen-step plan, prints its dependency layers,
+runs three preparations concurrently, assembles their evidence once, then runs
+three analysis lanes concurrently again. It retries one transient step and
 waits at a human approval boundary before publishing the final report. The
 output includes the measured overlap, not just a claim that the branches were
 parallel:
 
 ```text
 validation        cycle refused before execution=True
-revision 1 · 11 steps
+revision 1 · 13 steps
 layer 0  normalize
 layer 1  kinship + pca + phenotype       ← one scheduling pass
-layer 2  scan.yield + scan.depth + scan.height
-layer 3  qc.yield + qc.depth + qc.height
-layer 4  report                           ← approval gate
+layer 2  assemble
+layer 3  scan.yield + scan.depth + scan.height  ← one scheduling pass
+layer 4  qc.yield + qc.depth + qc.height       ← one scheduling pass
+layer 5  review
+layer 6  report                           ← approval gate
 
 parallel window  pca, phenotype, kinship  overlap=0.16s
+parallel window  scan.yield, scan.depth, scan.height  overlap=0.10s
 retry            scan.depth               attempt 2/2
 approval         report                   runner calls=0
-run              succeeded                11/11 nodes accounted for
+run              succeeded                13/13 nodes accounted for
 report runner    invoked after approval       calls=1
 ```
 
@@ -165,22 +170,23 @@ Use only the pieces you need: `reduceLoomEvent` and `hydrateLoomState` are pure
 functions, `LoomClient` handles HTTP/SSE resume, and `PlanGraph` can be embedded
 without the full workbench.
 
-## The plan shape
+## Read the execution graph
 
 The opening example is intentionally shaped like a real investigation rather
 than a linear hello-world:
 
 ```text
-                         ┌─ scan.yield  ── qc.yield  ─┐
-normalize ─┬─ pca ────────┤                             │
-           ├─ phenotype ──┼─ scan.depth  ── qc.depth ──┼─ report
-           └─ kinship ────┤                             │
-                         └─ scan.height ── qc.height ─┘
+normalize ─┬─ pca ───────────┐
+           ├─ phenotype ─────┼─ assemble ─┬─ scan.yield  ── qc.yield  ─┐
+           └─ kinship ───────┘             ├─ scan.depth  ── qc.depth  ──┼─ review ── report
+                                          └─ scan.height ── qc.height ─┘
 ```
 
 The edges are execution preconditions. `pca`, `phenotype`, and `kinship` share
 only `normalize`; they do not depend on one another, so they run together.
-The same is true of the three scans and the three checks. There is no
+`assemble` is an explicit fan-in: it makes the shared model context once. The
+three scans then share that context without depending on one another, and the
+three checks run the same way before `review` and `report`. There is no
 `parallel=True` switch to forget, and no model turn spent serializing work that
 the graph already says is independent.
 
@@ -224,6 +230,34 @@ The canonical Python package lives in
 [`packages/core/src/loomcraft/`](packages/core/src/loomcraft/). The React
 package in [`packages/renderer/`](packages/renderer/) is independent of the
 Python implementation and consumes the same event contract.
+
+<div align="center">
+<img src="assets/architecture.svg" width="900"
+     alt="LoomCraft architecture: the agent calls the broker, the broker authorizes the engine, the event log feeds the renderer, and host-owned runners provide the domain work.">
+</div>
+
+The other contract diagrams are still part of the repository. They are kept
+collapsed here so the landing page stays readable:
+
+<details>
+<summary>Open the re-planning, ownership, lifecycle, and session-zone views</summary>
+
+<p align="center">
+<img src="assets/plan-execution.svg" width="760" alt="A plan is revised after a review finds an inflated result.">
+</p>
+
+<p align="center">
+<img src="assets/step-kinds.svg" width="760" alt="Step kind determines whether the agent or the server may write its status.">
+</p>
+
+<p align="center">
+<img src="assets/step-lifecycle.svg" width="760" alt="The step status transition table.">
+</p>
+
+<p align="center">
+<img src="assets/session-zones.svg" width="760" alt="The four trust zones of a LoomCraft session.">
+</p>
+</details>
 
 ## Bring your own model runtime
 

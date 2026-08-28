@@ -15,21 +15,21 @@ LoomCraft 让智能体可以在运行时决定“下一步做什么”，但不�
 [![测试：311 通过](https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-311%20%E9%80%9A%E8%BF%87-34d399?style=flat-square&labelColor=0b1120)](#测试)
 [![许可证：MIT](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-f472b6?style=flat-square&labelColor=0b1120)](LICENSE)
 
-[30 秒示例](#30-秒看懂) · [快速开始](#快速开始) · [架构](#架构) · [文档](docs/) · [示例](examples/)
+[智能体提案，运行时证明](#智能体提案-运行时证明) · [读懂执行图](#读懂执行图) · [快速开始](#快速开始) · [架构](#架构) · [文档](docs/) · [示例](examples/)
 
 <br>
 
 <img src="assets/workbench-tour.zh.svg" width="980"
-     alt="LoomCraft 工作台：左侧是用户需求和智能体发布的计划，右侧是一张执行图。变异标准化后分成群体结构、表型准备和亲缘矩阵三条分支；三条分析分支各自进入结果核验，最后汇聚成一份报告。互不依赖的分支被同时派发。">
+     alt="LoomCraft 工作台：左侧是用户需求和智能体发布的计划，右侧是一张执行图。变异标准化后分成群体结构、表型准备和亲缘矩阵三条分支，证据汇聚一次后再扇出三条分析线；每条线都有结果核验，最后经过服务端核验汇聚成报告。互不依赖的分析线被同时派发。">
 
-<sub>一张计划、一条事件流、三条同时运行的分支。图片使用的卡片几何和状态 token
-与 <code>@loomcraft/renderer</code> 完全相同。</sub>
+<sub>一张计划、一条事件流：三个准备步骤汇聚成共享证据，再让三条分析线并排运行。
+图片使用的卡片几何和状态 token 与 <code>@loomcraft/renderer</code> 完全相同。</sub>
 
 </div>
 
 ---
 
-## LoomCraft 解决什么问题
+## 智能体提案，运行时证明
 
 多数 Agent SDK 停在“模型调用工具”这一步；多数工作流引擎则要求用户在任务开始前
 就把图固定下来。LoomCraft 把两者接起来：模型在运行时提出计划，宿主决定有哪些能力，
@@ -42,14 +42,14 @@ LoomCraft 让智能体可以在运行时决定“下一步做什么”，但不�
 | **Engine** | 依赖、并发、重试、产物 | 只有满足图前置条件的步骤才会运行 |
 | **Renderer** | 事件日志的可视投影 | 界面不从聊天记录猜状态 |
 
-最重要的一条规则只有一句话：
+这份契约有一个一眼可见的结果：
 
 > **并行是依赖图的属性，不是 prompt 里的关键字。**
 
 三个节点共享一个已完成的父节点、彼此之间没有边时，引擎会在同一轮调度中派发它们。
 某条分支失败时，图会记录失败并执行声明好的策略，不会把不完整的执行悄悄说成成功。
 
-## 30 秒看懂
+### 跑一遍工作台
 
 下面是真实的离线运行：不需要 API key、网络、科学计算依赖或前端构建。
 
@@ -60,22 +60,26 @@ python -m pip install -e packages/core
 python examples/00-workbench-tour/run.py
 ```
 
-第一个示例会发布一张十一步计划，打印依赖分层，让三条独立分支并发运行，故意重试一次
-瞬时失败的步骤，并在最终报告前停在人工审批闸口。输出里的重叠时间是实际测量值：
+工作台示例会发布一张十三步计划，打印依赖分层，让三个准备步骤并发运行，把证据汇聚一次，
+再让三条分析线并发运行。它会故意重试一次瞬时失败的步骤，并在最终报告前停在人工审批闸口。
+输出里的重叠时间是实际测量值：
 
 ```text
 validation        cycle refused before execution=True
-revision 1 · 11 steps
+revision 1 · 13 steps
 layer 0  normalize
 layer 1  kinship + pca + phenotype       ← 同一轮调度
-layer 2  scan.yield + scan.depth + scan.height
-layer 3  qc.yield + qc.depth + qc.height
-layer 4  report                           ← 等待审批
+layer 2  assemble
+layer 3  scan.yield + scan.depth + scan.height  ← 同一轮调度
+layer 4  qc.yield + qc.depth + qc.height       ← 同一轮调度
+layer 5  review
+layer 6  report                           ← 等待审批
 
 parallel window  pca, phenotype, kinship  overlap=0.16s
+parallel window  scan.yield, scan.depth, scan.height  overlap=0.10s
 retry            scan.depth               attempt 2/2
 approval         report                   runner calls=0
-run              succeeded                11/11 个节点有记录
+run              succeeded                13/13 个节点有记录
 report runner    invoked after approval       calls=1
 ```
 
@@ -153,20 +157,20 @@ import "@loomcraft/renderer/styles.css";
 
 也可以只使用 `reduceLoomEvent` / `hydrateLoomState` 这两个纯函数，或单独嵌入 `PlanGraph`。
 
-## 计划的形状
+## 读懂执行图
 
-开头的示例不是线性的 hello-world，而是一张真实的扇出/汇聚图：
+开头的示例不是线性的 hello-world，而是一张真实的扇出/汇聚/再扇出图：
 
 ```text
-                         ┌─ scan.yield  ── qc.yield  ─┐
-normalize ─┬─ pca ────────┤                             │
-           ├─ phenotype ──┼─ scan.depth  ── qc.depth ──┼─ report
-           └─ kinship ────┤                             │
-                         └─ scan.height ── qc.height ─┘
+normalize ─┬─ pca ───────────┐
+           ├─ phenotype ─────┼─ assemble ─┬─ scan.yield  ── qc.yield  ─┐
+           └─ kinship ───────┘             ├─ scan.depth  ── qc.depth  ──┼─ review ── report
+                                          └─ scan.height ── qc.height ─┘
 ```
 
 边是执行前置条件。`pca`、`phenotype`、`kinship` 只共享 `normalize`，互相没有依赖，
-因此会一起运行；三个扫描和三个核验也一样。没有容易忘记的 `parallel=True` 开关，
+因此会一起运行。`assemble` 是明确的汇聚点，只组装一次共享模型上下文；三个扫描共享它，
+彼此仍然没有依赖，因此也会一起运行，三个核验随后同理。没有容易忘记的 `parallel=True` 开关，
 也不需要让模型耗费轮次把本来独立的工作串起来。
 
 ## 引擎保证
@@ -198,6 +202,33 @@ normalize ─┬─ pca ────────┤                             
 
 Python 核心包在 [`packages/core/src/loomcraft/`](packages/core/src/loomcraft/)，React 包在
 [`packages/renderer/`](packages/renderer/)。两者共享事件契约，但彼此不绑定实现语言。
+
+<div align="center">
+<img src="assets/architecture.zh.svg" width="900"
+     alt="LoomCraft 架构：智能体调用 Broker，Broker 授权 Engine，事件日志驱动 Renderer，业务 runner 由宿主注册。">
+</div>
+
+其他契约图仍然保留在仓库中。为避免首页变得拥挤，下面默认折叠：
+
+<details>
+<summary>展开：重新规划、步骤权限、生命周期和会话信任区</summary>
+
+<p align="center">
+<img src="assets/plan-execution.zh.svg" width="760" alt="核验发现结果被混杂后，计划发布新版本重新规划。">
+</p>
+
+<p align="center">
+<img src="assets/step-kinds.zh.svg" width="760" alt="步骤 kind 决定由智能体还是服务端写入状态。">
+</p>
+
+<p align="center">
+<img src="assets/step-lifecycle.zh.svg" width="760" alt="步骤状态转移表。">
+</p>
+
+<p align="center">
+<img src="assets/session-zones.zh.svg" width="760" alt="LoomCraft 会话的四个信任区。">
+</p>
+</details>
 
 ## 接入自己的模型运行时
 

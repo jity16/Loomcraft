@@ -4,7 +4,7 @@ Four runnable scenarios. All work with **no API key** — a scripted agent
 replays the exact tool calls a model would make, and every one still goes
 through the real broker, engine, and event log.
 
-The first is a compact workbench tour. The next two are scientific, and share
+The first is a focused workbench tour. The next two are scientific, and share
 the same interesting moment: **the agent gets a defensible-looking answer,
 checks it, and finds it does not hold.** That is what an agent-authored plan is
 for. A fixed pipeline cannot
@@ -54,15 +54,16 @@ python examples/03-objectives-and-scheduling/run.py
 | Declared objectives + evidence ledger | | | | ✅ |
 | Whole-plan execution (`execute_plan`) | ✅ | | | ✅ |
 | `on_failure: continue` — a tolerated failure | | | | ✅ |
-| Server-owned `review` bound to a capability | | | | ✅ |
+| Server-owned `review` bound to a capability | ✅ | | | ✅ |
 | Codex / app-server JSON-RPC bridge | | | | ✅ |
 
 ## [00 · Workbench tour](00-workbench-tour/)
 
-The shortest path to the distinctive bit: one upload is normalised once, then
-three independent branches run concurrently, each gets a quality check, and a
-single report waits behind an approval gate. The script prints the measured
-overlap, retry count, final statuses, and hash-chain result.
+The shortest path to the distinctive bit: one upload is normalised once, three
+preparations run concurrently, their evidence is assembled, and three analysis
+lanes run concurrently again. Each lane gets a quality check, a review follows,
+and a single report waits behind an approval gate. The script prints both
+measured overlaps, the retry count, final statuses, and hash-chain result.
 
 ```bash
 python examples/00-workbench-tour/run.py

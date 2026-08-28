@@ -666,27 +666,28 @@ def hero(lang: str = "en") -> str:
 def workbench(lang: str = "en") -> str:
     """A first-glance workbench view, shaped like the product rather than a chart.
 
-    The original hero is deliberately a story about replanning.  This figure is
+    The original hero is deliberately a story about replanning. This figure is
     the complementary opening shot: the reader can see the agent's request on
-    the left and the execution graph on the right, with the independent branch
-    layer already in flight.  It uses the same card geometry and colour tokens
-    as :func:`hero`, so the README never invents a second visual language.
+    the left and a real fan-out/fan-in graph on the right, with the first
+    parallel layer already in flight. It uses the same card geometry and colour
+    tokens as :func:`hero`, so the README never invents a second visual language.
     """
 
     copy = {
         "en": {
-            "title": "The workbench: one plan, three branches in parallel",
+            "title": "The workbench: fan-out, fan-in, then three lanes again",
             "aria": (
                 "A LoomCraft workbench. A user asks for a report; the agent publishes a "
-                "eleven-step plan. Variant normalisation is complete, three independent "
-                "analysis branches are visible, and each branch continues to a QC step "
-                "before the final report. The three branches run concurrently because "
-                "there is no edge between them."
+                "A thirteen-step plan. Variant normalisation feeds three preparation "
+                "steps; their evidence is assembled once, then three independent "
+                "analysis lanes run together. Each lane has a quality check before a "
+                "server-owned review and the final report."
             ),
             "header": "Agent-authored plan · live execution",
+            "revision": "R1",
             "published": "PUBLISHED",
-            "parallel": "3 branches running",
-            "steps": "11 steps",
+            "parallel": "3 lanes · running",
+            "steps": "13 steps",
             "user_eyebrow": "USER REQUEST",
             "user_l1": "Give me a markdown report",
             "user_l2": "from this trial dataset.",
@@ -694,37 +695,40 @@ def workbench(lang: str = "en") -> str:
             "agent_eyebrow": "AGENT PLAN",
             "agent_l1": "publish_plan · revision 1",
             "agent_l2": "normalize → [ PCA | phenotype | kinship ]",
-            "agent_l3": "three branches → QC → report",
-            "point_eyebrow": "WHY THIS MATTERS",
-            "point_l1": "No parallel keyword.",
-            "point_l2": "The dependency graph is the",
-            "point_l3": "scheduler's concurrency plan.",
+            "agent_l3": "assemble → 3 scans → 3 checks → report",
+            "point_eyebrow": "THE SHAPE IS THE FEATURE",
+            "point_l1": "Fan-out. Fan-in. Fan-out.",
+            "point_l2": "Shared evidence is assembled once;",
+            "point_l3": "independent analyses run together.",
             "point_meta": "event stream is the source of truth",
-            "branch": "NO EDGE BETWEEN THESE · DISPATCH TOGETHER",
+            "branch": "SAME EVIDENCE · THREE ANALYSIS LANES",
             "footer": "The graph is the plan. The event log is the receipt.",
-            "normalize": "Normalize variants",
-            "pca": "Population structure",
-            "phenotype": "Prepare phenotype",
+            "normalize": "Variant normalization",
+            "pca": "PCA · structure",
+            "phenotype": "Prepare covariates",
             "kinship": "Relatedness matrix",
-            "scan_yield": "GWAS · yield",
-            "scan_depth": "GWAS · depth",
-            "scan_height": "GWAS · height",
-            "qc_yield": "QC · yield",
-            "qc_depth": "QC · depth",
-            "qc_height": "QC · height",
+            "assemble": "Assemble model inputs",
+            "scan_yield": "GCTA · yield (MLMA)",
+            "scan_depth": "GCTA · depth (MLMA)",
+            "scan_height": "GCTA · height (MLMA)",
+            "qc_yield": "GWAS QC · yield",
+            "qc_depth": "GWAS QC · depth",
+            "qc_height": "GWAS QC · height",
+            "review": "Review evidence",
             "report": "Compose report",
         },
         "zh": {
-            "title": "工作台：一张计划，三条分支同时运行",
+            "title": "工作台：扇出、汇聚，再扇出三条分析线",
             "aria": (
-                "LoomCraft 工作台：用户提出报告需求，智能体发布一张十一步计划。变异标准化已完成，"
-                "三条互不依赖的分析分支正在运行；每条分支随后进入核验，最后汇聚成报告。"
-                "因为分支之间没有依赖边，所以它们会并发执行。"
+                "LoomCraft 工作台：用户提出报告需求，智能体发布一张十三步计划。变异标准化后，"
+                "三个准备步骤先并行，证据汇聚一次，再扇出成三条互不依赖的分析线；每条线都有结果核验，"
+                "最后经过服务端核验汇聚成报告。"
             ),
             "header": "智能体发布的计划 · 实时执行",
+            "revision": "第 1 版",
             "published": "已发布",
-            "parallel": "3 条分支执行中",
-            "steps": "11 个步骤",
+            "parallel": "3 条分析线 · 执行中",
+            "steps": "13 个步骤",
             "user_eyebrow": "用户原话",
             "user_l1": "给我一份 markdown 报告",
             "user_l2": "总结这份试验数据。",
@@ -732,29 +736,31 @@ def workbench(lang: str = "en") -> str:
             "agent_eyebrow": "智能体计划",
             "agent_l1": "publish_plan · 第 1 版",
             "agent_l2": "标准化 → [ PCA | 表型 | 亲缘 ]",
-            "agent_l3": "三条分支 → 核验 → 汇总报告",
-            "point_eyebrow": "关键点",
-            "point_l1": "不需要 parallel 关键字。",
-            "point_l2": "依赖图本身就是调度器的",
-            "point_l3": "并发计划。",
+            "agent_l3": "汇聚 → 3 次扫描 → 3 次核验 → 报告",
+            "point_eyebrow": "图的形状就是特性",
+            "point_l1": "扇出。汇聚。再扇出。",
+            "point_l2": "共享证据只组装一次，",
+            "point_l3": "独立分析同时运行。",
             "point_meta": "事件流才是唯一事实来源",
-            "branch": "三条分支互不依赖 · 同时派发",
+            "branch": "共享同一份证据 · 三条分析线",
             "footer": "图是计划，事件日志是凭证。",
-            "normalize": "变异标准化",
-            "pca": "群体结构 PCA",
-            "phenotype": "表型准备",
+            "normalize": "变异规范化与过滤",
+            "pca": "PCA 群体结构",
+            "phenotype": "准备表型与协变量",
             "kinship": "亲缘关系矩阵",
-            "scan_yield": "GWAS · 背膘厚",
-            "scan_depth": "GWAS · 眼肌深度",
-            "scan_height": "GWAS · 体长",
-            "qc_yield": "结果核验 · 背膘厚",
-            "qc_depth": "结果核验 · 眼肌深度",
-            "qc_height": "结果核验 · 体长",
+            "assemble": "组装模型输入",
+            "scan_yield": "GCTA · 背膘厚",
+            "scan_depth": "GCTA · 眼肌深度",
+            "scan_height": "GCTA · 体长",
+            "qc_yield": "GWAS 诊断 · 背膘厚",
+            "qc_depth": "GWAS 诊断 · 眼肌深度",
+            "qc_height": "GWAS 诊断 · 体长",
+            "review": "核验全部证据",
             "report": "汇总报告",
         },
     }
     t = copy[lang]
-    width, height = 1100, 720
+    width, height = 1100, 990
     out = frame(width, height, t["title"], t["aria"], lang)
 
     # Workbench shell and dot-grid canvas.
@@ -763,6 +769,9 @@ def workbench(lang: str = "en") -> str:
         f'<line x1="0" y1="64" x2="{width}" y2="64" stroke="{HAIRLINE}"/>',
         f'<text x="28" y="39" class="s" font-size="15" font-weight="650" fill="{INK}">'
         f'{esc(t["header"])}</text>',
+        f'<rect x="600" y="19" width="74" height="24" rx="8" fill="{SUNKEN}" stroke="{HAIRLINE}"/>',
+        f'<text x="637" y="35" class="m" font-size="9.5" font-weight="700" fill="{INK3}" '
+        f'text-anchor="middle">{esc(t["revision"])}</text>',
         f'<rect x="690" y="19" width="96" height="24" rx="8" fill="{ACCENT_WASH}"/>',
         f'<text x="738" y="35" class="m" font-size="9.5" font-weight="700" fill="{ACCENT}" '
         f'text-anchor="middle">{esc(t["published"])}</text>',
@@ -829,56 +838,66 @@ def workbench(lang: str = "en") -> str:
         "pca": step("pca", "pca", "genotype.plink_pca"),
         "phenotype": step("phenotype", "phenotype", "phenotype.prepare"),
         "kinship": step("kinship", "kinship", "genotype.kinship"),
+        "assemble": step("assemble", "assemble", "analysis.model_context"),
         "scan_yield": step("scan_yield", "scan_yield", "gwas.scan_yield"),
         "scan_depth": step("scan_depth", "scan_depth", "gwas.scan_depth"),
         "scan_height": step("scan_height", "scan_height", "gwas.scan_height"),
         "qc_yield": step("qc_yield", "qc_yield", "gwas.qc_yield"),
         "qc_depth": step("qc_depth", "qc_depth", "gwas.qc_depth"),
         "qc_height": step("qc_height", "qc_height", "gwas.qc_height"),
+        "review": {
+            **step("review", "review", "review.evidence"),
+            "kind": "review",
+        },
     }
-    # A report card is drawn separately so the branch count remains obvious;
-    # the executable example adds the same fan-in as an answer step.
+    # Review and report are kept as their own fan-in tail, so the figure shows
+    # both the parallel analysis lanes and the point where their evidence is
+    # brought back together.
     positions = {
         "normalize": (598, 92),
         "pca": (350, 220),
         "phenotype": (598, 220),
         "kinship": (846, 220),
-        "scan_yield": (350, 350),
-        "scan_depth": (598, 350),
-        "scan_height": (846, 350),
-        "qc_yield": (350, 480),
-        "qc_depth": (598, 480),
-        "qc_height": (846, 480),
+        "assemble": (598, 350),
+        "scan_yield": (350, 480),
+        "scan_depth": (598, 480),
+        "scan_height": (846, 480),
+        "qc_yield": (350, 610),
+        "qc_depth": (598, 610),
+        "qc_height": (846, 610),
+        "review": (598, 740),
     }
     tracks = {
         "normalize": [(0, "succeeded")],
         "pca": [(0, "running"), (2.8, "succeeded")],
         "phenotype": [(0, "running"), (2.8, "succeeded")],
         "kinship": [(0, "running"), (2.8, "succeeded")],
-        "scan_yield": [(0, "pending"), (3.1, "running"), (6.2, "succeeded")],
-        "scan_depth": [(0, "pending"), (3.1, "running"), (6.2, "succeeded")],
-        "scan_height": [(0, "pending"), (3.1, "running"), (6.2, "succeeded")],
-        "qc_yield": [(0, "pending"), (6.5, "running"), (8.6, "succeeded")],
-        "qc_depth": [(0, "pending"), (6.5, "running"), (8.6, "succeeded")],
-        "qc_height": [(0, "pending"), (6.5, "running"), (8.6, "succeeded")],
+        "assemble": [(0, "pending"), (3.1, "running"), (4.1, "succeeded")],
+        "scan_yield": [(0, "pending"), (4.3, "running"), (6.8, "succeeded")],
+        "scan_depth": [(0, "pending"), (4.3, "running"), (6.8, "succeeded")],
+        "scan_height": [(0, "pending"), (4.3, "running"), (6.8, "succeeded")],
+        "qc_yield": [(0, "pending"), (7.0, "running"), (8.8, "succeeded")],
+        "qc_depth": [(0, "pending"), (7.0, "running"), (8.8, "succeeded")],
+        "qc_height": [(0, "pending"), (7.0, "running"), (8.8, "succeeded")],
+        "review": [(0, "pending"), (9.0, "running"), (10.0, "succeeded")],
     }
     report = {
         "id": "report",
         "title": localized("report"),
-        "kind": "answer",
-        "capability": None,
+        "kind": "capability",
+        "capability": "report.compose",
     }
-    positions["report"] = (598, 610)
-    tracks["report"] = [(0, "pending"), (8.9, "running"), (11.0, "succeeded")]
+    positions["report"] = (598, 870)
+    tracks["report"] = [(0, "pending"), (10.2, "running"), (11.5, "succeeded")]
     steps["report"] = report
 
     edges = [
         ("normalize", "pca"), ("normalize", "phenotype"), ("normalize", "kinship"),
-        ("pca", "scan_yield"),
-        ("phenotype", "scan_depth"),
-        ("kinship", "scan_height"),
+        ("pca", "assemble"), ("phenotype", "assemble"), ("kinship", "assemble"),
+        ("assemble", "scan_yield"), ("assemble", "scan_depth"), ("assemble", "scan_height"),
         ("scan_yield", "qc_yield"), ("scan_depth", "qc_depth"), ("scan_height", "qc_height"),
-        ("qc_yield", "report"), ("qc_depth", "report"), ("qc_height", "report"),
+        ("qc_yield", "review"), ("qc_depth", "review"), ("qc_height", "review"),
+        ("review", "report"),
     ]
 
     def node_bottom(node_id: str) -> tuple[int, int]:
@@ -906,11 +925,11 @@ def workbench(lang: str = "en") -> str:
     for parent, child in edges:
         out.append(edge_svg(node_bottom(parent), node_top(child), tones(child), 12.0))
     out.append(
-        f'<rect x="410" y="185" width="600" height="24" rx="12" fill="#eef4fb" '
+        f'<rect x="410" y="445" width="600" height="24" rx="12" fill="#eef4fb" '
         f'stroke="#b8cde4" stroke-width="1"/>'
     )
     out.append(
-        f'<text x="710" y="201" class="m" font-size="9.5" font-weight="700" fill="{RUN}" '
+        f'<text x="710" y="461" class="m" font-size="9.5" font-weight="700" fill="{RUN}" '
         f'text-anchor="middle">{esc(t["branch"])}</text>'
     )
     for node_id, node in steps.items():
@@ -922,7 +941,7 @@ def workbench(lang: str = "en") -> str:
         f'stroke-width="1.4" stroke-dasharray="4 4"/>',
         f'<path d="M332,246 L340,250 L332,254 Z" fill="{ACCENT}"/>',
         caption(204, 240, "publish → run" if lang == "en" else "发布 → 执行", ACCENT, 9.5),
-        f'<text x="28" y="712" class="m" font-size="10" fill="{INK3}">'
+        f'<text x="28" y="982" class="m" font-size="10" fill="{INK3}">'
         f'<tspan fill="{ACCENT}">▸ </tspan>{esc(t["footer"])}</text>',
     ]
     out.append("</svg>")
