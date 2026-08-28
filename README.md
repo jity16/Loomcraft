@@ -2,10 +2,11 @@
 
 # LoomCraft
 
-**Agent-authored plans. Server-owned execution. A live graph.**
+**The agent authors the investigation. The runtime keeps it honest.**
 
-LoomCraft gives an agent room to decide *what should happen next* without giving
-it the power to invent what already happened.
+An embeddable, provider-neutral runtime for work that changes as it learns:
+scientific discovery, evidence synthesis, long-running analysis, and any
+workflow where the next step depends on what the last step found.
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
@@ -15,94 +16,136 @@ it the power to invent what already happened.
 [![tests: 311 passing](https://img.shields.io/badge/tests-311%20passing-34d399?style=flat-square&labelColor=0b1120)](#testing)
 [![license: MIT](https://img.shields.io/badge/license-MIT-f472b6?style=flat-square&labelColor=0b1120)](LICENSE)
 
-[Agent proposes. Runtime proves.](#agent-proposes-runtime-proves) · [Read the execution graph](#read-the-execution-graph) · [Quick start](#quick-start) · [Docs](docs/) · [Examples](examples/)
+[Why LoomCraft](#for-work-that-takes-a-while) · [What it adds](#what-you-bring-what-loomcraft-adds) · [Architecture](#architecture) · [Quick start](#quick-start) · [Docs](docs/) · [Examples](examples/)
 
 <br>
 
 <img src="assets/workbench-tour.svg" width="980"
-     alt="The LoomCraft workbench: a user request and an agent-published plan sit beside an execution graph. One normalization step fans out into population structure, phenotype preparation, and a relatedness matrix; their evidence is assembled once, then three analysis lanes run independently, each with its own quality check, before a server-owned review and final report. The independent lanes are visibly dispatched together.">
+     alt="The LoomCraft workbench: a user request and an agent-published plan sit beside an execution graph. Variant normalization fans out into PCA, covariate preparation, and a relatedness matrix; their evidence is assembled once, then three GCTA analysis lanes run in parallel, each with a quality check, before a server-owned review and final report.">
 
-<sub>One plan, one event stream: three preparations converge into shared evidence, then three
-analysis lanes run side by side. The picture uses the same card geometry and status tokens as
-<code>@loomcraft/renderer</code>.</sub>
+<sub>One evolving plan, three parallel layers, one auditable result. The picture uses the same
+card geometry and status tokens as <code>@loomcraft/renderer</code>.</sub>
 
 </div>
 
 ---
 
-## Agent proposes. Runtime proves.
+## For work that takes a while
 
-Most agent SDKs stop at tool calls. Most workflow engines start with a graph that
-was fixed before the user arrived. LoomCraft is the boundary between the two:
-the model proposes a graph at runtime, while the host decides which operations
-exist and the engine decides what is allowed to run.
+Short tool calls are easy to orchestrate. The difficult work is open-ended:
+you start with a question, collect evidence, discover that an assumption was
+wrong, and need to continue tomorrow without losing what happened today.
 
-| Layer | Owns | The boundary it keeps |
+LoomCraft treats that as a first-class execution model. A plan is versioned
+data, not a prompt hidden in a transcript. Artifacts and events survive across
+turns. Independent investigations run together. A human can approve a
+side-effect before it starts. If a question cannot be answered, the record can
+say why and what would make it answerable.
+
+| Scenario | What changes during the work | LoomCraft gives you |
 | --- | --- | --- |
-| **Agent** | Intent, plan revisions, explanations | It can propose and inspect; it cannot mark a server operation complete. |
-| **Broker** | Tool schemas, authorization, budgets | Every model action passes through one validated door. |
-| **Engine** | Dependencies, concurrency, retries, artifacts | A step runs only when its graph preconditions are true. |
-| **Renderer** | A projection of the event log | The UI never guesses state from a chat transcript. |
+| **Scientific discovery** | A diagnostic changes the method or adds a missing analysis | Revisions with reasons, objective/evidence coverage, artifact provenance, and review steps |
+| **Literature or evidence review** | Missing files, incompatible studies, or an empty branch change the conclusion | Typed input requests, dependency-aware skips, retries, and an honest failure record |
+| **Long-running data analysis** | Hours-long tools need retries, cancellation, resume, and partial progress | Whole-plan execution, bounded policies, persisted sessions, SSE replay, and artifacts |
+| **Human-in-the-loop operations** | A result becomes an external action only after a person agrees | Approval gates before the runner is invoked, with an auditable decision event |
+| **Agentic engineering/ops** | The model chooses the next diagnostic instead of following a fixed runbook | A narrow tool surface over host-owned capabilities, with the same graph and state guarantees |
 
-The contract has one consequence you can see immediately:
+The common thread is not the domain. It is uncertainty over time: the plan can
+change, while the execution history stays trustworthy.
 
-> **Parallelism is a property of the dependency graph, not a prompt keyword.**
+## What you bring. What LoomCraft adds.
 
-If three nodes share a completed parent and have no edge between them, the
-engine dispatches all three in the same scheduling pass. If one branch fails,
-the graph records that fact and applies the declared failure policy; it does not
-silently turn an incomplete run into a success.
+LoomCraft is deliberately a seam, not a business application. You bring the
+model runtime, domain functions, storage, and transport you already trust; the
+library adds the contract and the guardrails around them.
 
-### Run the workbench tour
+| You bring | LoomCraft adds | The practical result |
+| --- | --- | --- |
+| Any model runtime | One canonical tool catalog and one broker boundary | Swap Claude, an OpenAI-compatible endpoint, a local JSONL process, or Codex without changing execution semantics |
+| Domain functions and workflows | Typed inputs, parameters, output ports, and registry authorization | The agent can compose your operations, but cannot call arbitrary code or invent a capability |
+| A graph of dependencies | DAG validation, deterministic layers, bounded parallel scheduling, retry, timeout, and cancellation | More throughput and more predictable recovery without a `parallel=True` flag |
+| Files and intermediate results | Session-scoped source refs, checksum verification, artifact promotion, and revision history | Long runs can resume and be audited without passing host paths to a model or browser |
+| An HTTP or app-server host | Optional FastAPI/SSE and JSON-RPC adapters | Live progress, reconnect/resume, approvals, and the same authorization path over the wire |
+| A React application (or none) | A pure reducer, deterministic layout, SVG graph, and ready-made workbench | Render the same truth in React, another UI framework, or your own canvas |
 
-This is a real, offline run. No API key, network, scientific package, or
-frontend build is required:
+### Connect any runtime
 
-```bash
-git clone https://github.com/jity16/Loomcraft.git
-cd Loomcraft
-python -m pip install -e packages/core
-python examples/00-workbench-tour/run.py
-```
+All of these adapters land on the same `ToolBroker` and `Engine`:
 
-The workbench tour publishes a thirteen-step plan, prints its dependency layers,
-runs three preparations concurrently, assembles their evidence once, then runs
-three analysis lanes concurrently again. It retries one transient step and
-waits at a human approval boundary before publishing the final report. The
-output includes the measured overlap, not just a claim that the branches were
-parallel:
+| Runtime | Entry point |
+| --- | --- |
+| Anthropic Messages | `AnthropicAgent()` |
+| OpenAI-compatible Chat Completions | `OpenAICompatibleAgent(...)` |
+| Another process over JSONL | `SubprocessAgent([...])` |
+| Codex or another app server | `AppServerBridge(broker)` |
+| Your own model loop | implement the `Agent.run_turn(...)` protocol |
+
+`tools.py` emits one canonical catalog and adapts it to Anthropic, OpenAI,
+Responses, and MCP dialects. Changing the model is a provider choice, not a
+second execution path.
+
+## Architecture
+
+The model is allowed to propose. The host owns the catalog. The broker is the
+only door. The engine is the only component that can make a server-owned step
+true. The renderer is a projection of the event log, so a refresh and a live
+stream converge on the same state.
 
 ```text
-validation        cycle refused before execution=True
-revision 1 · 13 steps
-layer 0  normalize
-layer 1  kinship + pca + phenotype       ← one scheduling pass
-layer 2  assemble
-layer 3  scan.yield + scan.depth + scan.height  ← one scheduling pass
-layer 4  qc.yield + qc.depth + qc.height       ← one scheduling pass
-layer 5  review
-layer 6  report                           ← approval gate
-
-parallel window  pca, phenotype, kinship  overlap=0.16s
-parallel window  scan.yield, scan.depth, scan.height  overlap=0.10s
-retry            scan.depth               attempt 2/2
-approval         report                   runner calls=0
-run              succeeded                13/13 nodes accounted for
-report runner    invoked after approval       calls=1
+user question / files
+          │
+          ▼
+   Agent / model runtime ── publish_plan ──► versioned Plan
+          │                                      │
+          │ tool calls                           ▼
+          └───────────────────────────────► ToolBroker
+                                                 │ validate + authorize
+                       host Registry ───────────┤
+                       (your runners)            ▼
+                                             Engine
+                                                 │ parallel / retry / gate
+                                                 ▼
+                                           EventLog + artifacts
+                                                 │
+                                  SSE / history │
+                                                 ▼
+                                             Renderer
 ```
 
-The longer scenarios in [`examples/`](examples/) use the same public contracts
-to show input requests, artifact integrity, re-planning, tolerated failures,
-review capabilities, SSE, and a JSON-RPC app-server bridge.
-The complete source and visual for this first tour live in
-[`examples/00-workbench-tour/`](examples/00-workbench-tour/).
+<div align="center">
+<img src="assets/architecture.svg" width="900"
+     alt="LoomCraft architecture: the agent calls the broker, the broker authorizes the engine, the event log feeds the renderer, and host-owned runners provide the domain work.">
+</div>
+
+The canonical Python package lives in
+[`packages/core/src/loomcraft/`](packages/core/src/loomcraft/). The React
+package in [`packages/renderer/`](packages/renderer/) consumes the same event
+contract and does not know anything about your domain code.
+
+## Read the execution graph
+
+The opening workbench is intentionally more than a linear demo:
+
+```text
+normalize ─┬─ pca ───────────┐
+           ├─ phenotype ─────┼─ assemble ─┬─ scan.yield  ── qc.yield  ─┐
+           └─ kinship ───────┘             ├─ scan.depth  ── qc.depth  ──┼─ review ── report
+                                          └─ scan.height ── qc.height ─┘
+```
+
+There is no `parallel=True` switch. `pca`, `phenotype`, and `kinship` share
+only `normalize`, so they are eligible in the same scheduling pass. `assemble`
+is an explicit fan-in that produces one shared model context. The three scans
+then become a second parallel layer, followed by three independent checks.
+Every edge is an execution precondition; every status change is an event.
 
 ## Quick start
 
-### 1. Register the work your host permits
+Install the engine and register the work your host permits:
 
-The registry is the seam between LoomCraft and your domain. A capability is a
-typed contract plus one runner; LoomCraft never imports your business modules.
+```bash
+python -m pip install -e packages/core
+```
 
 ```python
 from loomcraft import Capability, NodeContext, NodeResult, Port, Registry
@@ -121,7 +164,8 @@ async def profile(ctx: NodeContext) -> NodeResult:
     return NodeResult.ok(summary="profile complete")
 ```
 
-### 2. Give an agent a session and a broker
+Give a session and the broker to an agent, or call the same tools from your
+own loop:
 
 ```python
 from loomcraft import SessionStore, ToolBroker
@@ -144,18 +188,16 @@ run = await broker.dispatch("execute_plan", {})
 assert run.ok and run.result["status"] == "succeeded"
 ```
 
-Replace the direct calls with `AnthropicAgent`,
-`OpenAICompatibleAgent`, `SubprocessAgent`, or an implementation of the
-`Agent.run_turn(...)` protocol; the
-broker and engine guarantees do not change.
+For a real model, replace the direct calls with `AnthropicAgent`,
+`OpenAICompatibleAgent`, `SubprocessAgent`, or an implementation of
+`Agent.run_turn(...)`.
 
-### 3. Add the renderer when you need a UI
+### Add the renderer
 
 ```bash
 cd packages/renderer
 npm ci
 npm run build
-cd /your-app
 npm install /path/to/Loomcraft/packages/renderer
 ```
 
@@ -166,81 +208,73 @@ import "@loomcraft/renderer/styles.css";
 <LoomWorkbench sessionId={sessionId} baseUrl="/api/v1/loomcraft" />
 ```
 
-Use only the pieces you need: `reduceLoomEvent` and `hydrateLoomState` are pure
-functions, `LoomClient` handles HTTP/SSE resume, and `PlanGraph` can be embedded
-without the full workbench.
+Use only the layers you need: `reduceLoomEvent` and `hydrateLoomState` are
+pure functions, `LoomClient` handles HTTP/SSE resume, and `PlanGraph` can be
+embedded without the full workbench.
 
-## Read the execution graph
+## Runtime guarantees
 
-The opening example is intentionally shaped like a real investigation rather
-than a linear hello-world:
+- **Fail closed before execution.** Cycles, duplicate ids, unknown dependencies,
+  oversized plans, and unauthorized capabilities are rejected at the broker boundary.
+- **Server-owned work cannot be faked.** `capability` and `workflow` steps are
+  completed only by execution tools; a review can bind a server-owned capability.
+- **Evidence survives the turn.** Artifacts, objective coverage, revisions, and
+  append-only hash-chained events remain available across retries and reconnects.
+- **Paths never cross the boundary.** `upload:`, `artifact:`, and `scratch:` refs
+  are session-scoped and integrity-checked whenever they are read.
+- **Recovery is explicit.** Retry budgets, timeouts, cancellation, failure
+  policies, and approval decisions are visible in the graph and event history.
 
-```text
-normalize ─┬─ pca ───────────┐
-           ├─ phenotype ─────┼─ assemble ─┬─ scan.yield  ── qc.yield  ─┐
-           └─ kinship ───────┘             ├─ scan.depth  ── qc.depth  ──┼─ review ── report
-                                          └─ scan.height ── qc.height ─┘
+## Examples: the run is the documentation
+
+The command-line output is intentionally later in the README; the graph and
+architecture explain the product first. When you are ready to see the engine
+run, start with the [Workbench Tour](examples/00-workbench-tour/):
+
+```bash
+python examples/00-workbench-tour/run.py
 ```
 
-The edges are execution preconditions. `pca`, `phenotype`, and `kinship` share
-only `normalize`; they do not depend on one another, so they run together.
-`assemble` is an explicit fan-in: it makes the shared model context once. The
-three scans then share that context without depending on one another, and the
-three checks run the same way before `review` and `report`. There is no
-`parallel=True` switch to forget, and no model turn spent serializing work that
-the graph already says is independent.
-
-## What LoomCraft guarantees
-
-- **The graph is valid before it runs.** Cycles, duplicate ids, unknown
-  dependencies, oversized plans, and unauthorized capabilities are rejected at
-  the broker boundary.
-- **The model cannot fake server-owned work.** `capability` and `workflow` steps
-  are completed only by execution tools; review capabilities can make checks
-  server-owned too.
-- **Every result has a receipt.** Status changes, retries, progress, artifacts,
-  approvals, and errors are append-only events with monotonically increasing
-  sequence numbers and a verifiable hash chain.
-- **Files are references, not paths.** `upload:`, `artifact:`, and `scratch:`
-  refs are confined to a session and integrity-checked whenever they are read.
-- **Recovery is explicit.** Retries are bounded, timeouts and cancellation are
-  awaited, failure policies are visible, and a new plan revision must explain
-  what changed.
-
-## Architecture
+It publishes a thirteen-step plan, rejects a cyclic graph before execution,
+measures two parallel windows, retries one transient failure, waits at an
+approval gate, and verifies the event hash chain:
 
 ```text
-user request / files
-        │
-        ▼
-  Agent / model runtime ── publishes ──► Plan + revision history
-        │                              │
-        │ tool calls                   ▼
-        └──────────────────────► ToolBroker
-                                      │ validates + authorizes
-                                      ▼
-                 host Registry ───► Engine ───► EventLog
-                 (your runners)       │             │
-                                      │             └── SSE / history
-                                      ▼                    │
-                                artifacts             Renderer
+validation        cycle refused before execution=True
+revision 1 · 13 steps
+layer 0  normalize
+layer 1  kinship + pca + phenotype       ← one scheduling pass
+layer 2  assemble
+layer 3  scan.yield + scan.depth + scan.height  ← one scheduling pass
+layer 4  qc.yield + qc.depth + qc.height       ← one scheduling pass
+layer 5  review
+layer 6  report                           ← approval gate
+
+parallel window  pca, phenotype, kinship  overlap=0.16s
+parallel window  scan.yield, scan.depth, scan.height  overlap=0.10s
+retry            scan.depth               attempt 2/2
+approval         report                   runner calls=0
+run              succeeded                13/13 nodes accounted for
+report runner    invoked after approval       calls=1
 ```
 
-The canonical Python package lives in
-[`packages/core/src/loomcraft/`](packages/core/src/loomcraft/). The React
-package in [`packages/renderer/`](packages/renderer/) is independent of the
-Python implementation and consumes the same event contract.
+Then choose a deeper scenario:
 
-<div align="center">
-<img src="assets/architecture.svg" width="900"
-     alt="LoomCraft architecture: the agent calls the broker, the broker authorizes the engine, the event log feeds the renderer, and host-owned runners provide the domain work.">
-</div>
+- [Association study](examples/01-gwas-discovery/) — scientific re-planning,
+  artifact-based review, input variants, SSE, and the browser workbench.
+- [Literature meta-analysis](examples/02-literature-meta/) — input requests,
+  evidence branches, failure/skip propagation, and a live Claude path.
+- [Objectives and scheduling](examples/03-objectives-and-scheduling/) — an
+  evidence ledger, tolerated failure, server-owned review, and JSON-RPC.
+- [All example coverage](examples/README.md) — a capability-by-capability matrix.
 
-The other contract diagrams are still part of the repository. They are kept
-collapsed here so the landing page stays readable:
+## More diagrams
+
+The original contract views are still shipped. Expand the set when you want to
+study one concern in isolation:
 
 <details>
-<summary>Open the re-planning, ownership, lifecycle, and session-zone views</summary>
+<summary>Re-planning, step ownership, lifecycle, and session trust zones</summary>
 
 <p align="center">
 <img src="assets/plan-execution.svg" width="760" alt="A plan is revised after a review finds an inflated result.">
@@ -259,25 +293,9 @@ collapsed here so the landing page stays readable:
 </p>
 </details>
 
-## Bring your own model runtime
+## Documentation
 
-All adapters land on the same broker:
-
-| Runtime | Entry point |
-| --- | --- |
-| Anthropic | `AnthropicAgent()` |
-| OpenAI-compatible Chat/Responses | `OpenAICompatibleAgent(...)` |
-| Another process over JSONL | `SubprocessAgent([...])` |
-| Codex or another app server | `AppServerBridge(broker)` |
-| Your own model runtime | implement the `Agent.run_turn(...)` protocol |
-
-`tools.py` emits one canonical tool catalog and adapts it to Anthropic, OpenAI,
-Responses, and MCP dialects. Changing the model is a provider choice, not a
-second execution path.
-
-## Documentation and examples
-
-Start with [`docs/README.md`](docs/README.md), then choose a path:
+Start with [`docs/README.md`](docs/README.md):
 
 - [Concepts](docs/01-concepts.md) — plans, steps, capabilities, sessions, events
 - [Defining plans](docs/02-defining-plans.md) — schema, validation, policies, objectives
@@ -287,8 +305,7 @@ Start with [`docs/README.md`](docs/README.md), then choose a path:
 - [Architecture](docs/06-architecture.md) — design decisions and trade-offs
 - [API reference](docs/07-api-reference.md) — public Python, TypeScript, events, endpoints
 
-Runnable scenarios live in [`examples/README.md`](examples/README.md). Machine-
-readable Plan, Event, and Tool contracts live in
+Machine-readable Plan, Event, and Tool contracts live in
 [`packages/core/schema/`](packages/core/schema/).
 
 ## Testing
