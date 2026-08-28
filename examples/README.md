@@ -1,22 +1,24 @@
 # Examples
 
-Three runnable scenarios. All work with **no API key** — a scripted agent
+Four runnable scenarios. All work with **no API key** — a scripted agent
 replays the exact tool calls a model would make, and every one still goes
 through the real broker, engine, and event log.
 
-All three are scientific, and in the first two the interesting moment is the
-same: **the agent gets a defensible-looking answer, checks it, and finds it does
-not hold.** That is what an agent-authored plan is for. A fixed pipeline cannot
+The first is a compact workbench tour. The next two are scientific, and share
+the same interesting moment: **the agent gets a defensible-looking answer,
+checks it, and finds it does not hold.** That is what an agent-authored plan is
+for. A fixed pipeline cannot
 notice that its own model was misspecified, because it has no way to change what
 it does next.
 
-The third is about the other half of honest investigation: what happens to a
+The fourth is about the other half of honest investigation: what happens to a
 question the data simply cannot answer.
 
 ```bash
 git clone https://github.com/jity16/Loomcraft.git && cd Loomcraft
 pip install -e packages/core
 
+python examples/00-workbench-tour/run.py
 python examples/01-gwas-discovery/run_scripted.py
 python examples/02-literature-meta/run_scripted.py
 python examples/03-objectives-and-scheduling/run.py
@@ -24,36 +26,47 @@ python examples/03-objectives-and-scheduling/run.py
 
 ## What each one covers
 
-| Capability | Example 1 | Example 2 | Example 3 |
-| --- | :---: | :---: | :---: |
-| DAG validation (cycles, unknown deps, duplicate ids) | ✅ | | |
-| Dependency layering → parallel scheduling | ✅ | ✅ | ✅ |
-| Real concurrent execution inside one graph | ✅ | | ✅ |
-| Dependency gating (no jumping ahead) | ✅ | ✅ | ✅ |
-| Terminal-state protection (`succeeded` cannot restart) | ✅ | | ✅ |
-| Typed input contracts and input variants | ✅ | ✅ | |
-| Optional inputs (one capability, two shapes of output) | ✅ | ✅ | |
-| Parameter validation (types, ranges, enums) | ✅ | | ✅ |
-| Port-addressed artifacts (two outputs, no positional guessing) | ✅ | | ✅ |
-| Retry with exponential backoff | ✅ | | ✅ |
-| Timeouts | ✅ | | ✅ |
-| Human approval before a hard-to-reverse step | ✅ | | |
-| Genuine step failure, for a domain reason | ✅ | ✅ | ✅ |
-| Skip propagation to the downstream subtree | ✅ | ✅ | |
-| Replan discipline (increasing revision + reason) | ✅ | ✅ | ✅ |
-| Artifact survival across a replan | ✅ | ✅ | |
-| Structured file requests + execution gating | | ✅ | |
-| Upload allocation across typed slots | | ✅ | |
-| Agent-reported `review` / `answer` steps | ✅ | ✅ | |
-| Hash-chained audit log | ✅ | ✅ | ✅ |
-| HTTP + SSE server | ✅ | | |
-| Browser UI | ✅ | | |
-| Live Claude agent | | ✅ | |
-| Declared objectives + evidence ledger | | | ✅ |
-| Whole-plan execution (`execute_plan`) | | | ✅ |
-| `on_failure: continue` — a tolerated failure | | | ✅ |
-| Server-owned `review` bound to a capability | | | ✅ |
-| Codex / app-server JSON-RPC bridge | | | ✅ |
+| Capability | Tour | Example 1 | Example 2 | Example 3 |
+| --- | :---: | :---: | :---: | :---: |
+| DAG validation (cycles, unknown deps, duplicate ids) | ✅ | ✅ | | |
+| Dependency layering → parallel scheduling | ✅ | ✅ | ✅ | ✅ |
+| Real concurrent execution inside one graph | ✅ | ✅ | | ✅ |
+| Dependency gating (no jumping ahead) | | ✅ | ✅ | ✅ |
+| Terminal-state protection (`succeeded` cannot restart) | | ✅ | | ✅ |
+| Typed input contracts and input variants | ✅ | ✅ | ✅ | |
+| Optional inputs (one capability, two shapes of output) | | ✅ | ✅ | |
+| Parameter validation (types, ranges, enums) | | ✅ | | ✅ |
+| Port-addressed artifacts (two outputs, no positional guessing) | ✅ | ✅ | | ✅ |
+| Retry with exponential backoff | ✅ | ✅ | | ✅ |
+| Timeouts | | ✅ | | ✅ |
+| Human approval before a hard-to-reverse step | ✅ | ✅ | | |
+| Genuine step failure, for a domain reason | | ✅ | ✅ | ✅ |
+| Skip propagation to the downstream subtree | | ✅ | ✅ | |
+| Replan discipline (increasing revision + reason) | | ✅ | ✅ | ✅ |
+| Artifact survival across a replan | | ✅ | ✅ | |
+| Structured file requests + execution gating | | | ✅ | |
+| Upload allocation across typed slots | | | ✅ | |
+| Agent-reported `review` / `answer` steps | | ✅ | ✅ | |
+| Hash-chained audit log | ✅ | ✅ | ✅ | ✅ |
+| HTTP + SSE server | | ✅ | | |
+| Browser UI | | ✅ | | |
+| Live Claude agent | | | ✅ | |
+| Declared objectives + evidence ledger | | | | ✅ |
+| Whole-plan execution (`execute_plan`) | ✅ | | | ✅ |
+| `on_failure: continue` — a tolerated failure | | | | ✅ |
+| Server-owned `review` bound to a capability | | | | ✅ |
+| Codex / app-server JSON-RPC bridge | | | | ✅ |
+
+## [00 · Workbench tour](00-workbench-tour/)
+
+The shortest path to the distinctive bit: one upload is normalised once, then
+three independent branches run concurrently, each gets a quality check, and a
+single report waits behind an approval gate. The script prints the measured
+overlap, retry count, final statuses, and hash-chain result.
+
+```bash
+python examples/00-workbench-tour/run.py
+```
 
 ## [01 · Association study](01-gwas-discovery/)
 

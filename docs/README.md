@@ -1,5 +1,8 @@
 # LoomCraft documentation
 
+This directory contains the public, user-facing guides. Working notes and
+implementation scratch files are intentionally kept outside the release tree.
+
 | Guide | Read it for |
 | --- | --- |
 | [01 · Concepts](01-concepts.md) | The model: plans, step kinds, capabilities, sessions, source refs, events |
@@ -13,7 +16,9 @@
 ## Reading paths
 
 **"I want to try it."** → [README quick start](../README.md#quick-start), then
-`python examples/01-gwas-discovery/run_scripted.py`.
+`python examples/00-workbench-tour/run.py` for the compact fan-out/fan-in tour.
+Use `python examples/01-gwas-discovery/run_scripted.py` for the full re-planning
+scenario.
 
 **"I'm adding my domain."** → [Concepts](01-concepts.md) §Capability →
 [Extending](05-extending.md) §Writing runners → the

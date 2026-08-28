@@ -44,7 +44,9 @@ Full documentation: <https://github.com/jity16/Loomcraft/tree/main/docs>
 ## Tests
 
 ```bash
-python -m unittest discover -s tests
+python -m pytest -q packages/core/tests
 ```
 
-187 tests on the standard library — no pytest required.
+The core contract suite currently contains 257 tests. Provider and FastAPI
+dependencies remain optional, so the engine can be embedded without a web
+framework or a model SDK.

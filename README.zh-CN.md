@@ -2,236 +2,146 @@
 
 # LoomCraft
 
-**一个 AI 原生的 DAG 规划与执行引擎。**
+**智能体写计划。服务端守住执行。界面实时画出真实状态。**
 
-图由智能体来写。服务端来证明它是安全的。引擎来跑它。
-界面把它画出来 —— 实时地。
+LoomCraft 让智能体可以在运行时决定“下一步做什么”，但不能把“其实没发生的事”
+写成已经发生。
 
 [English](README.md) · **简体中文**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-38bdf8?style=flat-square&logo=python&logoColor=white&labelColor=0b1120)](packages/core/pyproject.toml)
 [![React 18+](https://img.shields.io/badge/react-18+-a78bfa?style=flat-square&logo=react&logoColor=white&labelColor=0b1120)](packages/renderer/package.json)
 [![核心依赖：仅 pydantic](https://img.shields.io/badge/%E6%A0%B8%E5%BF%83%E4%BE%9D%E8%B5%96-%E4%BB%85%20pydantic-fbbf24?style=flat-square&labelColor=0b1120)](packages/core/pyproject.toml)
-[![测试：309 通过](https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-309%20%E9%80%9A%E8%BF%87-34d399?style=flat-square&labelColor=0b1120)](#测试)
+[![测试：311 通过](https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-311%20%E9%80%9A%E8%BF%87-34d399?style=flat-square&labelColor=0b1120)](#测试)
 [![许可证：MIT](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-f472b6?style=flat-square&labelColor=0b1120)](LICENSE)
 
-[快速开始](#快速开始) · [为科研而生](#为科研而生) · [核心概念](#核心概念) · [架构](#架构) · [文档](docs/) · [示例](examples/)
+[30 秒示例](#30-秒看懂) · [快速开始](#快速开始) · [架构](#架构) · [文档](docs/) · [示例](examples/)
 
 <br>
 
-<img src="assets/plan-execution.zh.svg" width="820"
-     alt="LoomCraft 工作台正在渲染一次关联分析的第 2 版计划：质控成功后，祖先主成分和亲缘矩阵因为互相之间没有依赖而被同时派发，考虑结构的扫描等齐两者，随后是多重检验校正。">
+<img src="assets/workbench-tour.zh.svg" width="980"
+     alt="LoomCraft 工作台：左侧是用户需求和智能体发布的计划，右侧是一张执行图。变异标准化后分成群体结构、表型准备和亲缘矩阵三条分支；三条分析分支各自进入结果核验，最后汇聚成一份报告。互不依赖的分支被同时派发。">
 
-<sub>这就是工作台本身，用 <code>@loomcraft/renderer</code> 自带的设计 token 画的 —— 计划也是真的，
-来自<a href="examples/01-gwas-discovery/">示例 1</a>。<br>
-第 <b>1</b> 版跑完后，它自己的 <code>review</code> 步骤从产物里读出 λ = 2.80，于是智能体把整个计划换掉。<br>
-第 <b>2</b> 版补上了它原本缺的两个步骤 —— 而这两步之间没有依赖边，所以引擎让它们同时跑。</sub>
+<sub>一张计划、一条事件流、三条同时运行的分支。图片使用的卡片几何和状态 token
+与 <code>@loomcraft/renderer</code> 完全相同。</sub>
 
 </div>
 
 ---
 
-## 这是什么
+## LoomCraft 解决什么问题
 
-大多数「AI 工作流」工具只给你两种东西之一：要么是一个**可视化编排器**，DAG 由人画出来，
-模型只负责填某一个节点；要么是一个**智能体循环**，模型爱干什么干什么，你事后才知道它干了什么。
+多数 Agent SDK 停在“模型调用工具”这一步；多数工作流引擎则要求用户在任务开始前
+就把图固定下来。LoomCraft 把两者接起来：模型在运行时提出计划，宿主决定有哪些能力，
+引擎决定哪些步骤现在真的可以执行。
 
-LoomCraft 是第三条路。任务图由智能体在运行时**自己写**——按真实问题的形状来写，而不是套模板——
-但它只能通过一个狭窄的、经过校验的工具面来写。服务端在任何东西开跑之前先检查这张图，
-独占每一次执行结果的写入权，并把每一次状态变化作为事件推流出去。你同时拿到了模型带来的灵活性
-和服务端强制保证的安全性，以及一个真正展示计划的界面——而不是一段假装自己是计划的聊天记录。
+| 层 | 负责什么 | 守住的边界 |
+| --- | --- | --- |
+| **智能体** | 理解目标、发布版本、解释结果 | 可以提案和观察，不能替服务端操作伪造完成状态 |
+| **Broker** | 工具 schema、授权、预算 | 每一次模型动作都经过同一个校验入口 |
+| **Engine** | 依赖、并发、重试、产物 | 只有满足图前置条件的步骤才会运行 |
+| **Renderer** | 事件日志的可视投影 | 界面不从聊天记录猜状态 |
 
-<div align="center">
-<img src="assets/architecture.zh.svg" width="820"
-     alt="LoomCraft 请求路径：智能体调用工具，broker 校验并授权每一次调用，引擎执行 DAG，两者都写入只追加的哈希链事件日志，渲染器通过 SSE 订阅该日志。用户上传和审批从渲染器流回智能体。">
-</div>
+最重要的一条规则只有一句话：
 
-### 这条路换来了什么
+> **并行是依赖图的属性，不是 prompt 里的关键字。**
 
-抽象说够了，看具体的。下面是[示例 1](examples/01-gwas-discovery/) 的真实输出 ——
-不需要 API key，不联网，整个跑完不到三秒：
+三个节点共享一个已完成的父节点、彼此之间没有边时，引擎会在同一轮调度中派发它们。
+某条分支失败时，图会记录失败并执行声明好的策略，不会把不完整的执行悄悄说成成功。
 
-```
- 6 · 朴素扫描，以及那个把它判死刑的诊断量
-   基因组膨胀因子 λ                 2.8024   ← 校准良好的扫描应该在 1.0 附近
-   通过 FDR                         8
-   …其中真实的                      3 / 8
-   假阳性                           rs9701, rs5543, rs11703, rs2001, rs10317
+## 30 秒看懂
 
- 7 · 智能体自己上报的步骤：那次改变了计划的核验
-   伪造一个 capability 步骤         被拒绝 —— 'assoc' 是 capability 步骤
-   就地重跑 'assoc'                 被拒绝 —— 不能从 'succeeded' 重新开始
-   mlm 自己怎么说                   model='mlm' 需要 'grm' 上的亲缘矩阵
-   结论                             计划缺一个它现在没有的步骤
+下面是真实的离线运行：不需要 API key、网络、科学计算依赖或前端构建。
 
- 8 · 重新规划的纪律：第 2 版必须自己解释自己
-   第 2 版被接受                    True
-   layer 1                          kinship, pca   ← 引擎可以同时跑这两个
-
-11 · 校正之后的扫描
-   基因组膨胀因子 λ                 2.8024  →  0.9461
-   通过校正                         8  →  3
-   找回的位点                       rs1385, rs2309, rs3233
-   真正有效应的位点                 rs1385, rs2309, rs3233
+```bash
+git clone https://github.com/jity16/Loomcraft.git
+cd Loomcraft
+python -m pip install -e packages/core
+python examples/00-workbench-tour/run.py
 ```
 
-这里没有一个数字是写死的。`data.py` 构造的群体里，祖先来源同时牵动表型**和**大部分位点的
-等位基因频率，所以 λ = 2.80 是这个设定必然的算术结果；后面落到 0.9461、只剩三个位点，
-同样是算出来的。没有人告诉智能体它第一次的答案是错的 ——
-是它自己的 `review` 步骤从产物里读出了那个数，然后重写了自己的计划。
+第一个示例会发布一张十一步计划，打印依赖分层，让三条独立分支并发运行，故意重试一次
+瞬时失败的步骤，并在最终报告前停在人工审批闸口。输出里的重叠时间是实际测量值：
 
-固定的流水线做不到这件事，因为它没有任何办法改变自己的下一步。不受约束的智能体循环
-也不能指望，因为它可以直接宣称自己做完了。而在这里它做不到：`assoc` 是 `capability` 步骤，
-所以 broker 既拒绝了它想直接把这步标记成完成的请求，也拒绝了它想换个参数偷偷重跑一遍的请求。
-它唯一被允许改的东西是**计划本身** —— 而计划的每一次改动，都留下了一个版本号和一条理由。
+```text
+validation        cycle refused before execution=True
+revision 1 · 11 steps
+layer 0  normalize
+layer 1  kinship + pca + phenotype       ← 同一轮调度
+layer 2  scan.yield + scan.depth + scan.height
+layer 3  qc.yield + qc.depth + qc.height
+layer 4  report                           ← 等待审批
 
-### 服务端保证了什么
-
-计划不是一个「界面拿来装点门面」的建议。下面这些都是强制执行的，而且有测试覆盖：
-
-- **图一定是 DAG。** 环、自依赖、指向不存在节点的依赖、重复 id、超大计划，都会在发布时被拒绝。
-- **一个步骤只有在它的依赖被满足之后才会运行。** 边是执行的前置条件，不是文档。
-- **模型不能把自己的活儿标记成「干完了」。** `capability`、`workflow`，以及绑定了 capability 的
-  `review` 步骤，**只能**由它们各自的执行工具写入；所以一个步骤显示 `succeeded`，
-  就一定对应一次真实发生过、产出了真实产物的执行。
-- **重新规划是单调的，而且必须给出理由。** 新版本号必须递增，并且必须带 `reason`；旧版本会保留以供审计。
-- **声明过的问题不能被悄悄放弃。** 改版可以给一个 objective 重新定性 —— 包括定性为「无法估计」——
-  但不能让它消失。
-- **审批闸口挡在工作前面。** 标了 `requires_approval` 的 capability 会在 runner 被调用**之前**暂停，
-  所以决定发生在副作用之前，而不是事后追认。
-- **文件是引用，永远不是路径。** 输入是 `upload:` / `artifact:` / `scratch:` 引用，
-  每次使用都会重新解析、重新校验校验和，并且被限制在会话内部。
-- **循环是有界的。** 每轮的调用预算和重复检测，会拦住一个已经绕晕了、只是在烧上下文而没有进展的模型。
-
-### 你不用自己写的部分
-
-并行调度、带上限的指数退避重试、超时、真正会等待的取消、执行前的人工审批闸口、跳过传播、
-哈希链审计日志、可续传的 SSE 推流，以及一个读取同一份事件流的 React 渲染器。
-
----
-
-## 为科研而生
-
-上面那次 GWAS 不是「包装成科研的 demo」。它就是 LoomCraft 要解决的问题的形状 ——
-而「探索」区别于「自动化」的三件事，全在里面。
-
-**下一步做什么，取决于上一步发现了什么。** 当所有步骤都能事先写死时，流水线是合适的；
-探索恰恰是写不死的那种情况：λ = 2.80 才是第 2 版里出现亲缘矩阵步骤的**原因**。
-LoomCraft 让智能体在运行时把这张图写出来，同时仍然不允许它伪造结果。
-
-**问题必须比答案活得更久。** 计划里可以声明 `objectives` —— 这次工作到底要确立什么 ——
-并用一份证据台账把每个问题绑定到交代它的步骤和产物上：
-
-```json
-{
-  "objectives": [
-    { "id": "q1", "question": "哪些位点与产量相关？",
-      "estimand": "每等位基因效应", "independent_unit": "小区" },
-    { "id": "q2", "question": "是否存在母体效应？",
-      "independent_unit": "母本" }
-  ],
-  "analysis_coverage": [
-    { "objective_id": "q1", "status": "executed",
-      "reason": "考虑群体结构的扫描，λ = 0.95",
-      "step_ids": ["scan"], "artifact_refs": ["artifact:art-9f3c"] },
-    { "objective_id": "q2", "status": "not_estimable",
-      "reason": "系谱里没有母本列，母体分量不可识别",
-      "next_action": "索取包含母本 id 的系谱导出" }
-  ]
-}
+parallel window  pca, phenotype, kinship  overlap=0.16s
+retry            scan.depth               attempt 2/2
+approval         report                   runner calls=0
+run              succeeded                11/11 个节点有记录
+report runner    invoked after approval       calls=1
 ```
 
-强制执行的是最要命的那部分：`executed` **必须**指向一个步骤或一个产物 ——
-你无法在不点名证据的情况下宣称某个问题已经回答。`not_estimable`、`blocked`、
-`deferred_by_scope` **必须**给出 `next_action`。而且后续改版无法让 `q2` 消失 ——
-结束一次探索最省事的办法就是不再问那个没做成的部分，这条路被堵死了。
-
-这就是「我们找到了三个位点」和「我们找到了三个位点；母体效应在这个设计下不可识别，
-以及需要什么才能识别」之间的区别。后者价值更高，而且只有后者能从记录里复现。
-
-**把一张已经定下来的图跑完，不该消耗模型轮次。** 图定了以后，`execute_plan`
-把整张图一次性交给调度器，作为一次可审计的运行 —— 独立分支并行、每步各自的重试和超时、
-审批闸口照常生效：
-
-```python
-await broker.dispatch("execute_plan", {})
-```
-
-一条探索性分支跑空了，那是**发现**，不是崩溃：`on_failure: "continue"`
-让它的独立下游继续跑，而失败本身仍然记录在步骤上和 `failed_nodes` 里。
-
----
+更完整的 [`examples/`](examples/) 还覆盖输入请求、产物完整性、重新规划、容错分支、
+服务端核验能力、SSE 和 JSON-RPC app-server 桥。
+这个开场示例的完整代码和配图在
+[`examples/00-workbench-tour/`](examples/00-workbench-tour/)。
 
 ## 快速开始
 
-```bash
-# 只要引擎 —— 只有一个依赖（pydantic）
-pip install "git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"
+### 1. 注册宿主允许的工作
 
-# 带上可选 extras：FastAPI/SSE 服务、Claude 智能体、OpenAI 智能体
-pip install "loomcraft[server,anthropic] @ git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"
-```
-
-> 没有发到 PyPI / npm，直接从仓库装。React 渲染器那边，`npm` 不支持从 git 子目录安装，
-> 所以先构建一次再按路径装：
->
-> ```bash
-> git clone https://github.com/jity16/Loomcraft.git
-> cd Loomcraft/packages/renderer && npm install && npm run build
-> cd /你的/项目 && npm install /path/to/Loomcraft/packages/renderer
-> ```
-
-**1 · 注册你允许智能体做的事。**
+Registry 是 LoomCraft 与业务代码之间的接缝。Capability 是一份带类型的契约和一个 runner；
+LoomCraft 不会 import 你的业务模块。
 
 ```python
-from loomcraft import (
-    Capability, CapabilityInput, NodeContext, NodeResult, Port, Registry,
-)
+from loomcraft import Capability, NodeContext, NodeResult, Port, Registry
 
 registry = Registry()
 
 @registry.capability_runner(Capability(
-    id="gwas.kinship",
-    name="基因组亲缘关系矩阵",
-    description="从基因型计算任意两个样本之间的实测亲缘关系。",
-    runner="gwas.kinship",
-    inputs=(CapabilityInput(
-        key="cohort", name="群体", description="已质控的基因型矩阵。",
-        allowed_extensions=(".tsv",),
-    ),),
-    outputs=(Port(name="grm", artifact_type="json"),),
-    max_attempts=3,              # 带指数退避的重试
-    timeout_seconds=120,
-    tags=("gwas", "kinship", "relatedness", "mixed-model"),
+    id="table.profile",
+    name="Profile a table",
+    description="Count rows and report the column names.",
+    runner="table.profile",
+    outputs=(Port(name="profile", artifact_type="json"),),
 ))
-async def kinship(ctx: NodeContext) -> NodeResult:
-    cohort = parse(ctx.input("cohort").read_text())
-    ctx.progress(0.5, "正在标准化位点")
-    ctx.emit("grm", "kinship.json", relatedness(cohort))
-    return NodeResult.ok(samples=len(cohort.samples))
+async def profile(ctx: NodeContext) -> NodeResult:
+    ctx.emit("profile", "profile.json", '{"columns": 12, "rows": 480}')
+    return NodeResult.ok(summary="profile complete")
 ```
 
-扩展点就这一个。LoomCraft 从不 import 你的业务代码 —— 你只是注册了一份契约和一个 async 可调用对象。
-
-**2 · 把工具和一个会话交给智能体。**
+### 2. 把会话和工具入口交给智能体
 
 ```python
-from loomcraft import AnthropicAgent, SessionStore, ToolBroker
+from loomcraft import SessionStore, ToolBroker
 
-session = SessionStore("./data").create()
-session.save_upload("cohort.vcf", open("cohort.vcf", "rb"))
-
+session = SessionStore("./.loomcraft-data").create()
 broker = ToolBroker(session, registry)
-result = await AnthropicAgent().run_turn(
-    broker, "这个群体里哪些位点跟耐盐性有关联？"
-)
+broker.begin_turn()
+
+await broker.dispatch("publish_plan", {"plan": {
+    "goal": "Profile the uploaded table",
+    "revision": 1,
+    "steps": [{
+        "id": "profile",
+        "title": "Profile the table",
+        "kind": "capability",
+        "capability": "table.profile",
+    }],
+}})
+run = await broker.dispatch("execute_plan", {})
+assert run.ok and run.result["status"] == "succeeded"
 ```
 
-**3 · 起服务，然后渲染。**
+把直接调用换成 `AnthropicAgent`、`OpenAICompatibleAgent`、`SubprocessAgent`，或者实现
+`Agent.run_turn(...)` 协议即可；Broker 和 Engine 的保证不会改变。
 
-```python
-from loomcraft.server import create_app
-app = create_app(SessionStore("./data"), registry, lambda _s: AnthropicAgent())
+### 3. 需要界面时接入 Renderer
+
+```bash
+cd packages/renderer
+npm ci
+npm run build
+cd /你的项目
+npm install /path/to/Loomcraft/packages/renderer
 ```
 
 ```tsx
@@ -241,255 +151,97 @@ import "@loomcraft/renderer/styles.css";
 <LoomWorkbench sessionId={sessionId} baseUrl="/api/v1/loomcraft" />
 ```
 
-**4 · 或者完全不用 API key，直接跑示例。**
+也可以只使用 `reduceLoomEvent` / `hydrateLoomState` 这两个纯函数，或单独嵌入 `PlanGraph`。
 
-```bash
-python examples/01-gwas-discovery/run_scripted.py
-python examples/02-literature-meta/run_scripted.py
+## 计划的形状
+
+开头的示例不是线性的 hello-world，而是一张真实的扇出/汇聚图：
+
+```text
+                         ┌─ scan.yield  ── qc.yield  ─┐
+normalize ─┬─ pca ────────┤                             │
+           ├─ phenotype ──┼─ scan.depth  ── qc.depth ──┼─ report
+           └─ kinship ────┤                             │
+                         └─ scan.height ── qc.height ─┘
 ```
 
----
+边是执行前置条件。`pca`、`phenotype`、`kinship` 只共享 `normalize`，互相没有依赖，
+因此会一起运行；三个扫描和三个核验也一样。没有容易忘记的 `parallel=True` 开关，
+也不需要让模型耗费轮次把本来独立的工作串起来。
 
-## 核心概念
+## 引擎保证
 
-### Plan（计划）
-
-一张带版本号的 DAG，由智能体通过 `publish_plan` 发布。每个步骤都有 `id`、`title`、`kind`
-和 `depends_on` 依赖边。
-
-```json
-{
-  "goal": "在上传的群体中找出与耐盐性关联的位点",
-  "revision": 2,
-  "reason": "第 1 版 λ = 2.80 —— 全基因组范围被抬高，这是群体结构，不是信号",
-  "steps": [
-    { "id": "qc",      "kind": "capability", "capability": "gwas.qc",        "title": "基因型质控" },
-    { "id": "pca",     "kind": "capability", "capability": "gwas.pca",       "title": "祖先主成分",     "depends_on": ["qc"] },
-    { "id": "kinship", "kind": "capability", "capability": "gwas.kinship",   "title": "亲缘关系矩阵",   "depends_on": ["qc"] },
-    { "id": "assoc",   "kind": "capability", "capability": "gwas.associate", "title": "考虑结构的扫描", "depends_on": ["qc", "pca", "kinship"] },
-    { "id": "correct", "kind": "capability", "capability": "gwas.correct",   "title": "多重检验校正",   "depends_on": ["assoc"] },
-    { "id": "review",  "kind": "review",     "title": "核验模型是否校准", "depends_on": ["correct"] },
-    { "id": "answer",  "kind": "answer",     "title": "汇报关联位点",     "depends_on": ["review"] }
-  ]
-}
-```
-
-`pca` 和 `kinship` 都只依赖 `qc`，彼此之间没有依赖，所以引擎会**并发**跑它们 ——
-也就是本页顶部动图里那一层同时亮起来的两个节点。**并行是图的形状决定的属性**，
-而不是一个需要计划作者记住的关键字。
-
-注意那个 `reason`。这个计划的第 1 版里根本没有 `pca` 和 `kinship` 步骤，
-它是从 `qc` 直接进到一次朴素的逐位点扫描的。智能体之所以补上这两步，
-是因为它自己的 `review` 步骤从产物里读出了 2.80 的基因组膨胀因子，
-从而判定错的是**模型**，不是算术。
-
-### 步骤的 kind
-
-kind 决定的是**谁有权把这个步骤标记为完成** —— 这才是重要的那一半。
-
-| Kind | 是什么 | 由谁完成 |
-| --- | --- | --- |
-| `capability` | 一个已注册的、带类型契约的原子工作单元 | **只能**由 `run_capability` |
-| `workflow` | 一个已注册的多步 SOP | **只能**由 `run_workflow` |
-| `dynamic` | 智能体在自己沙箱里亲手做的工作 | 智能体，通过 `update_step` |
-| `review` | 对已产出产物的显式核验 | 智能体，通过 `update_step` —— **除非**它绑定了一个 review 域的 capability，那样就归服务端所有 |
-| `answer` | 组织最终回复 | 智能体，通过 `update_step` |
-
-`review` 步骤可以指定一个 runner 以 `review.` 开头、或打了 `review` 标签的 capability。
-这样一来，核验就从「智能体说的」变成了「服务端跑出来的」—— 而这恰恰用在最需要的地方：
-那个决定结果可不可信的检查上。
-
-<div align="center">
-<img src="assets/step-kinds.zh.svg" width="820"
-     alt="answer、dynamic、review 三类步骤由智能体自己通过 update_step 写入。capability 和 workflow 只能由 run_capability / run_workflow 写入，它们派发给引擎；对这两类调用 update_step 会被 broker 拒绝。">
-</div>
-
-那条红色虚线才是重点：智能体**可以去要求**把一个 `capability` 步骤标记为完成，而 broker 会拒绝。
-所以一个 `capability` 步骤显示 `succeeded`，就永远对应一次真实发生过的执行。
-
-### 步骤的生命周期
-
-状态不是可以随便写的字符串 —— 每一次写入都要过一张转移表，
-所以日志里不可能出现一个「倒退」了的步骤。
-
-<div align="center">
-<img src="assets/step-lifecycle.zh.svg" width="820"
-     alt="依赖全部成功时，步骤从 pending 进入 running；有依赖失败则进入 skipped。running 在归属者写下结果时进入 succeeded，在 runner 抛错或超时时进入 failed。failed 可以通过有上限的重试回到 running，skipped 可以通过重新规划回到 running。succeeded 是终态。">
-</div>
-
-`succeeded` 是终态 —— 没有任何东西能让一个步骤退出成功状态，重新规划也不行。
-`failed`、`skipped` 和 `cancelled` 则不是：一次重试或一个更高的版本可以把它们重新放回执行队列，
-这正是「不改写历史也能恢复」的做法。`waiting_approval` 是等人做决定时停留的地方；
-`ready` 表示调度器可以派发、但还没派发的步骤 —— 当整张图同时在跑时，这个区分才有意义。
-
-每个步骤可以带自己的执行策略，就写在它所管辖的那份工作旁边：
-
-```json
-{
-  "id": "scan", "kind": "capability", "capability": "gwas.associate",
-  "depends_on": ["qc", "pca", "kinship"],
-  "retry": { "max_attempts": 3, "backoff_seconds": 2, "max_backoff_seconds": 60 },
-  "timeout_seconds": 900,
-  "on_failure": "stop"
-}
-```
-
-不写 `retry` 就继承 capability 自己声明的策略 —— 所以发布一份计划，
-绝不会把一个本来要求重试三次的能力悄悄降级成只跑一次。
-
-### Capability（能力）
-
-一份带类型的契约：声明输入（含扩展名和数量约束）、声明参数（含类型和取值范围）、
-声明输出、一个 runner。因为这份契约本身就是数据，所以**同一份声明**同时产出了三样东西：
-面向智能体的 JSON Schema、服务端的校验逻辑、以及引擎的执行图 —— 它们不可能各自漂移。
-
-输入的 **variants** 让一个能力可以接受多种备选形态，同时又不接受胡来的组合：
-`input_variants=(("bed", "bim", "fam"), ("vcf",))` 的意思是「一整套 PLINK 三件套
-**或者** 一个 VCF」，绝不接受各取一半。
-
-### Source ref（来源引用）
-
-输入永远不是文件系统路径。它是 `upload:<id>`、`artifact:<id>` 或 `scratch:<相对路径>`，
-每一次调用都要经过会话解析，并做越界检查和完整性检查。一个会话有四个信任级别不同的区：
-`uploads/`（属于用户）、`artifacts/`（执行产物）、`scratch/`（智能体自己的工作区）、
-`control/`（服务端独占，智能体触及不到）。
-
-<div align="center">
-<img src="assets/session-zones.zh.svg" width="820"
-     alt="一个会话有四个信任级别不同的目录。uploads 属于用户，artifacts 由引擎写入，scratch 是智能体自己的工作区，control 存放计划、事件日志和游标 —— 任何 source ref 都指不到它。">
-</div>
-
-上图里的每一根箭头，在**每一次**解析时都会被重新检查，而不是注册时查一次就完事：
-路径会被重新约束在会话内（软链接也算），记录的 SHA-256 会被重新比对 ——
-所以一个在引用背后被掉包的文件会被抓出来，而不是被照单全收。
-
-### Events（事件）
-
-一切可观察的东西都是只追加、哈希链日志上的一个事件：
-`plan_published`、`step_updated`、`execution_started/progress/finished`、
-`artifact_registered`、`input_required/fulfilled/cancelled/invalidated`、
-`approval_required/resolved`、`tool_call/result`、`message`、`error`、`done`。
-
-渲染器用**一个纯函数**把这些折叠成状态 —— 并且用**同一个函数**折叠持久化的历史记录。
-这就是为什么实时推流和跑到一半刷新页面，两者不可能给出不一致的结果。
-
-### Replan（重新规划）
-
-出问题的时候，智能体会发布一个更高的版本，并带上 `reason`。旧版本会保留以供审计，
-界面也提供版本切换器，这样审阅者可以看到智能体在「学到某件事」前后分别相信的是什么。
-
----
+- **运行前校验图。** 环、重复 id、未知依赖、超大计划和未授权能力都会在 Broker 边界被拒绝。
+- **模型不能伪造服务端工作。** `capability` 和 `workflow` 只能由执行工具完成；核验能力也可以归服务端所有。
+- **每个结果都有凭证。** 状态、重试、进度、产物、审批和错误都写入带单调序号、可验证哈希链的只追加事件。
+- **文件是引用，不是路径。** `upload:`、`artifact:`、`scratch:` 引用始终限制在会话内，并在读取时重新校验完整性。
+- **恢复过程显式可见。** 重试有上限，超时和取消会等待真正停止，失败策略和重新规划理由都会留在记录里。
 
 ## 架构
 
-```
-packages/core/src/loomcraft/
-├── plan.py           Plan/Step 模型、DAG 校验、版本规则、objectives
-├── graph.py          纯 DAG 算法（分层、环检测、关键路径）—— 零依赖
-├── registry.py       能力、工作流、runner —— 你的业务在这里接入
-├── context.py        runner 的契约：NodeContext / NodeResult
-├── engine.py         异步驱动：并行、重试、超时、审批、取消
-├── plan_executor.py  把已发布的计划编译成一张图，供 execute_plan 使用
-├── store.py          会话、四个信任区、source ref 解析、产物
-├── events.py         只追加的哈希链事件日志 + 订阅
-├── inputs.py         带类型的文件请求 + 上传到槽位的分配
-├── tools.py          11 个智能体工具的 JSON Schema，4 种厂商方言
-├── broker.py         唯一的入口：校验并派发每一次工具调用
-├── agent.py          智能体循环 —— Anthropic、OpenAI 兼容、子进程、脚本化
-├── protocol.py       面向 Codex / app-server 宿主的 JSON-RPC 桥
-└── server.py         可选的 FastAPI 路由：会话、上传、SSE、下载
-
-packages/renderer/src/
-├── state.ts      事件 reducer + 历史 hydration（与框架无关）
-├── layout.ts     带交叉削减的分层 DAG 布局 —— 零依赖
-├── client.ts     HTTP + SSE 客户端，带 detach/续传语义
-├── useLoomSession.ts   大多数宿主只需要这一个 hook
-└── components/   PlanGraph、各类面板，以及开箱即用的 LoomWorkbench
+```text
+用户请求 / 文件
+       │
+       ▼
+ Agent / 模型运行时 ── 发布 ──► Plan + 版本历史
+       │                         │
+       │ 工具调用                ▼
+       └──────────────────► ToolBroker
+                                  │ 校验 + 授权
+                                  ▼
+             宿主 Registry ───► Engine ───► EventLog
+             （你的 runner）       │             │
+                                  │             └── SSE / history
+                                  ▼                    │
+                              artifacts             Renderer
 ```
 
-**依赖预算。** 引擎只依赖 `pydantic`，别的一概没有。FastAPI、`anthropic`、`openai`
-都是可选的 extras。渲染器唯一的 peer 依赖是 React —— DAG 布局、平移缩放画布、SSE 读取器
-全是自己写的，所以把 LoomCraft 加进一个界面里，不会顺带拖进来一个图表库或者图布局引擎。
+Python 核心包在 [`packages/core/src/loomcraft/`](packages/core/src/loomcraft/)，React 包在
+[`packages/renderer/`](packages/renderer/)。两者共享事件契约，但彼此不绑定实现语言。
 
-**厂商中立。** `tools.py` 产出一份规范的工具面，并把它适配到 Anthropic、OpenAI chat、
-OpenAI Responses 和 MCP 四种方言。不管调用来自哪一种，broker 的校验逻辑完全一致 ——
-所以换模型只是改一行构造函数。
+## 接入自己的模型运行时
 
----
+所有适配器最终都走同一个 Broker：
 
-## 接入你自己的模型运行时
-
-四条路，最终都落到同一个 broker 上，因此享有同样的保证：
-
-| 运行时 | 怎么接 |
+| 运行时 | 入口 |
 | --- | --- |
-| Claude | `AnthropicAgent()` |
-| 任何 OpenAI 兼容端点 | `OpenAICompatibleAgent(client, model=…, stream=True)` |
-| 跑在另一个进程里的模型 | `SubprocessAgent(["my-runner", "--serve"])` —— stdio 上的 JSONL |
-| Codex / app-server 宿主 | `AppServerBridge(broker)` —— JSON-RPC |
+| Anthropic | `AnthropicAgent()` |
+| OpenAI 兼容 Chat/Responses | `OpenAICompatibleAgent(...)` |
+| 另一个进程（JSONL） | `SubprocessAgent([...])` |
+| Codex / app-server | `AppServerBridge(broker)` |
+| 自定义模型运行时 | 实现 `Agent.run_turn(...)` 协议 |
 
-最后一种是「模型运行时自己占一个进程，反过来向你要工具」的情况。
-turn 开始时把工具目录下发，然后把每一条进来的消息交给桥：
+`tools.py` 生成一份规范工具目录，再适配 Anthropic、OpenAI、Responses 和 MCP 方言。
+换模型是换 Provider，不会产生第二条执行路径。
 
-```python
-from loomcraft import AppServerBridge, dynamic_tool_specs
+## 文档和示例
 
-bridge = AppServerBridge(broker)
+从 [`docs/README.md`](docs/README.md) 开始：
 
-tools = dynamic_tool_specs()          # 下发给运行时
+- [概念](docs/01-concepts.md)：计划、步骤、能力、会话、事件
+- [定义计划](docs/02-defining-plans.md)：schema、校验、策略、objectives
+- [Agent 集成](docs/03-agent-integration.md)：工具、循环、Provider、守卫
+- [前端集成](docs/04-frontend-integration.md)：reducer、SSE、组件、主题
+- [扩展](docs/05-extending.md)：runner、workflow、存储、传输层
+- [架构](docs/06-architecture.md)：设计决策和取舍
+- [API 参考](docs/07-api-reference.md)：公开 Python、TypeScript、事件和端点
 
-async def on_message(message: dict) -> dict:
-    return await bridge.handle(message)   # 返回 {} 表示那是一条通知
-```
-
-`initialize`、`tools/list`、`tools/call`，以及 Codex 的 `item/tool/call`，
-最终都落到 `broker.dispatch`。一次从 JSON-RPC 进来的工具调用，
-会像进程内循环发来的调用一样按已发布的计划做授权 —— 传输层不会变成第二扇门。
-
----
+可运行场景见 [`examples/README.md`](examples/README.md)，机器可读的 Plan/Event/Tool 契约见
+[`packages/core/schema/`](packages/core/schema/)。
 
 ## 测试
 
 ```bash
-make install
-make check        # lint、Python 测试、渲染器类型检查/测试/构建、文档检查
+python -m pip install -e "packages/core[dev]"
+python -m pytest -q                         # Python 257 个测试
+python -m ruff check packages/core/src --select F,E9,B023
+python tools/check_docs.py
+
+npm --prefix packages/renderer ci
+npm --prefix packages/renderer run typecheck
+npm --prefix packages/renderer run build
+npm --prefix packages/renderer test             # Renderer 54 个测试
 ```
-
-或者直接跑：
-
-```bash
-python -m pytest -q packages/core/tests    # 255 个测试
-npm test --prefix packages/renderer        # 54 个测试
-```
-
-覆盖范围包括：DAG 校验、版本纪律、状态转移机、objective 证据台账、并发、
-重试与退避上限、超时、审批闸口、取消、跳过与失败策略、路径穿越、端口契约、
-完整性校验、事件日志篡改、宿主细节脱敏、JSON-RPC 桥、两个新增的 agent provider，
-以及 broker 的每一道防线。
-
-`packages/core/tests/test_hardening.py` 值得单独读一遍：
-里面每一个测试都对应一个曾经存在的缺陷 —— 那时引擎会把「其实没有安全发生的事」报告为成功。
-
----
-
-## 文档
-
-> 详细文档目前只有英文版。
-
-| 指南 | 内容 |
-| --- | --- |
-| [Concepts](docs/01-concepts.md) | 模型本身：计划、kind、能力、会话、事件 |
-| [Defining plans](docs/02-defining-plans.md) | 计划 schema、校验规则、状态转移、objectives、重新规划 |
-| [Agent integration](docs/03-agent-integration.md) | 工具面、提示词、Claude/OpenAI/子进程/Codex、循环设计 |
-| [Frontend integration](docs/04-frontend-integration.md) | reducer、SSE、组件、主题、自定义界面 |
-| [Extending](docs/05-extending.md) | runner、能力、工作流、存储、传输层 |
-| [Architecture](docs/06-architecture.md) | 设计决策，以及为什么这么定 |
-| [API reference](docs/07-api-reference.md) | 每一个公开符号、工具、事件和接口 |
-
-机器可读的契约在 [`packages/core/schema/`](packages/core/schema/)，
-由代码生成，因此不可能和真正在跑的校验器漂移。
-
----
 
 ## 许可证
 

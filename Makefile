@@ -31,6 +31,7 @@ docs:
 check: lint test typecheck build docs
 
 examples:
+	$(PYTHON) examples/00-workbench-tour/run.py
 	$(PYTHON) examples/01-gwas-discovery/run_scripted.py
 	$(PYTHON) examples/02-literature-meta/run_scripted.py
 	$(PYTHON) examples/03-objectives-and-scheduling/run.py

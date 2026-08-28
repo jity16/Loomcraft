@@ -3,9 +3,9 @@
 
     python assets/build_diagrams.py
 
-The README picture and the shipped component are the same thing drawn twice, so
-the tokens below are copied from ``packages/renderer/src/styles.css`` and the
-node geometry from ``PlanGraph.tsx`` — 224x92 cards, a 22px glyph chip, a
+The README pictures and the shipped component are the same thing drawn twice,
+so the tokens below are copied from ``packages/renderer/src/styles.css`` and
+the node geometry from ``PlanGraph.tsx`` — 224x92 cards, a 22px glyph chip, a
 13px title, the mono capability id, and the dot/status/id footer row. If you
 restyle the renderer, re-run this; if the two ever disagree, the picture is the
 one that is lying.
@@ -660,7 +660,277 @@ def hero(lang: str = "en") -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  Figure 2 — kind decides who may write the step
+#  Figure 2 — the workbench tour: one parent, three parallel branches
+# ════════════════════════════════════════════════════════════════════════════
+
+def workbench(lang: str = "en") -> str:
+    """A first-glance workbench view, shaped like the product rather than a chart.
+
+    The original hero is deliberately a story about replanning.  This figure is
+    the complementary opening shot: the reader can see the agent's request on
+    the left and the execution graph on the right, with the independent branch
+    layer already in flight.  It uses the same card geometry and colour tokens
+    as :func:`hero`, so the README never invents a second visual language.
+    """
+
+    copy = {
+        "en": {
+            "title": "The workbench: one plan, three branches in parallel",
+            "aria": (
+                "A LoomCraft workbench. A user asks for a report; the agent publishes a "
+                "eleven-step plan. Variant normalisation is complete, three independent "
+                "analysis branches are visible, and each branch continues to a QC step "
+                "before the final report. The three branches run concurrently because "
+                "there is no edge between them."
+            ),
+            "header": "Agent-authored plan · live execution",
+            "published": "PUBLISHED",
+            "parallel": "3 branches running",
+            "steps": "11 steps",
+            "user_eyebrow": "USER REQUEST",
+            "user_l1": "Give me a markdown report",
+            "user_l2": "from this trial dataset.",
+            "user_meta": "one upload · one session",
+            "agent_eyebrow": "AGENT PLAN",
+            "agent_l1": "publish_plan · revision 1",
+            "agent_l2": "normalize → [ PCA | phenotype | kinship ]",
+            "agent_l3": "three branches → QC → report",
+            "point_eyebrow": "WHY THIS MATTERS",
+            "point_l1": "No parallel keyword.",
+            "point_l2": "The dependency graph is the",
+            "point_l3": "scheduler's concurrency plan.",
+            "point_meta": "event stream is the source of truth",
+            "branch": "NO EDGE BETWEEN THESE · DISPATCH TOGETHER",
+            "footer": "The graph is the plan. The event log is the receipt.",
+            "normalize": "Normalize variants",
+            "pca": "Population structure",
+            "phenotype": "Prepare phenotype",
+            "kinship": "Relatedness matrix",
+            "scan_yield": "GWAS · yield",
+            "scan_depth": "GWAS · depth",
+            "scan_height": "GWAS · height",
+            "qc_yield": "QC · yield",
+            "qc_depth": "QC · depth",
+            "qc_height": "QC · height",
+            "report": "Compose report",
+        },
+        "zh": {
+            "title": "工作台：一张计划，三条分支同时运行",
+            "aria": (
+                "LoomCraft 工作台：用户提出报告需求，智能体发布一张十一步计划。变异标准化已完成，"
+                "三条互不依赖的分析分支正在运行；每条分支随后进入核验，最后汇聚成报告。"
+                "因为分支之间没有依赖边，所以它们会并发执行。"
+            ),
+            "header": "智能体发布的计划 · 实时执行",
+            "published": "已发布",
+            "parallel": "3 条分支执行中",
+            "steps": "11 个步骤",
+            "user_eyebrow": "用户原话",
+            "user_l1": "给我一份 markdown 报告",
+            "user_l2": "总结这份试验数据。",
+            "user_meta": "一次上传 · 一个会话",
+            "agent_eyebrow": "智能体计划",
+            "agent_l1": "publish_plan · 第 1 版",
+            "agent_l2": "标准化 → [ PCA | 表型 | 亲缘 ]",
+            "agent_l3": "三条分支 → 核验 → 汇总报告",
+            "point_eyebrow": "关键点",
+            "point_l1": "不需要 parallel 关键字。",
+            "point_l2": "依赖图本身就是调度器的",
+            "point_l3": "并发计划。",
+            "point_meta": "事件流才是唯一事实来源",
+            "branch": "三条分支互不依赖 · 同时派发",
+            "footer": "图是计划，事件日志是凭证。",
+            "normalize": "变异标准化",
+            "pca": "群体结构 PCA",
+            "phenotype": "表型准备",
+            "kinship": "亲缘关系矩阵",
+            "scan_yield": "GWAS · 背膘厚",
+            "scan_depth": "GWAS · 眼肌深度",
+            "scan_height": "GWAS · 体长",
+            "qc_yield": "结果核验 · 背膘厚",
+            "qc_depth": "结果核验 · 眼肌深度",
+            "qc_height": "结果核验 · 体长",
+            "report": "汇总报告",
+        },
+    }
+    t = copy[lang]
+    width, height = 1100, 720
+    out = frame(width, height, t["title"], t["aria"], lang)
+
+    # Workbench shell and dot-grid canvas.
+    out += [
+        f'<rect x="1" y="1" width="{width - 2}" height="64" fill="{SURFACE}"/>',
+        f'<line x1="0" y1="64" x2="{width}" y2="64" stroke="{HAIRLINE}"/>',
+        f'<text x="28" y="39" class="s" font-size="15" font-weight="650" fill="{INK}">'
+        f'{esc(t["header"])}</text>',
+        f'<rect x="690" y="19" width="96" height="24" rx="8" fill="{ACCENT_WASH}"/>',
+        f'<text x="738" y="35" class="m" font-size="9.5" font-weight="700" fill="{ACCENT}" '
+        f'text-anchor="middle">{esc(t["published"])}</text>',
+        f'<rect x="798" y="19" width="142" height="24" rx="8" fill="#e9f0f9" stroke="#c4d8ea"/>',
+        f'<circle cx="814" cy="31" r="3.5" fill="{RUN}"/>',
+        f'<text x="824" y="35" class="s" font-size="10" font-weight="600" fill="{RUN}">'
+        f'{esc(t["parallel"])}</text>',
+        f'<rect x="952" y="19" width="116" height="24" rx="8" fill="{SUNKEN}" stroke="{HAIRLINE}"/>',
+        f'<text x="1010" y="35" class="m" font-size="10" font-weight="600" fill="{INK3}" '
+        f'text-anchor="middle">{esc(t["steps"])}</text>',
+        f'<defs><pattern id="workbench-dots" width="20" height="20" patternUnits="userSpaceOnUse">'
+        f'<circle cx="1" cy="1" r="1" fill="{GRAPH_DOT}"/></pattern></defs>',
+        f'<rect x="1" y="65" width="{width - 2}" height="{height - 66}" fill="{GRAPH_CANVAS}"/>',
+        f'<rect x="1" y="65" width="{width - 2}" height="{height - 66}" fill="url(#workbench-dots)"/>',
+        f'<line x1="318" y1="65" x2="318" y2="{height}" stroke="{HAIRLINE}"/>',
+    ]
+
+    # Left-hand conversation rail, deliberately close to the product UI.
+    out += [
+        panel(24, 92, 266, 84),
+        eyebrow(40, 114, t["user_eyebrow"], INK3),
+        caption(40, 137, t["user_l1"], INK, 12, mono=False),
+        caption(40, 155, t["user_l2"], INK, 12, mono=False),
+        caption(40, 168, t["user_meta"], INK3, 9.5),
+        panel(24, 196, 266, 112, stroke=ACCENT, fill="#f7faf8"),
+        f'<rect x="24" y="196" width="4" height="112" rx="2" fill="{ACCENT}"/>',
+        eyebrow(40, 218, t["agent_eyebrow"], ACCENT),
+        caption(40, 243, t["agent_l1"], INK, 11, mono=False),
+        caption(40, 264, t["agent_l2"], INK2, 10, mono=True),
+        caption(40, 284, t["agent_l3"], INK2, 10, mono=True),
+        panel(24, 332, 266, 142, stroke=RUN, fill="#f4f8fc"),
+        f'<rect x="24" y="332" width="4" height="142" rx="2" fill="{RUN}"/>',
+        eyebrow(40, 356, t["point_eyebrow"], RUN),
+        f'<text x="40" y="383" class="s" font-size="13" font-weight="650" fill="{INK}">'
+        f'{esc(t["point_l1"])}</text>',
+        caption(40, 407, t["point_l2"], INK2, 11, mono=False),
+        caption(40, 425, t["point_l3"], INK2, 11, mono=False),
+        caption(40, 454, t["point_meta"], RUN, 9.5),
+        # A small legend is useful in a screenshot and costs less than another paragraph.
+        eyebrow(40, 536, "STATUS" if lang == "en" else "状态", INK3),
+        f'<circle cx="44" cy="558" r="3.5" fill="{OK}"/>',
+        caption(54, 562, "succeeded" if lang == "en" else "完成", INK3, 10, mono=False),
+        f'<circle cx="44" cy="580" r="3.5" fill="{RUN}"/>',
+        caption(54, 584, "running" if lang == "en" else "执行中", INK3, 10, mono=False),
+        f'<circle cx="44" cy="602" r="3.5" fill="{IDLE}"/>',
+        caption(54, 606, "pending" if lang == "en" else "等待", INK3, 10, mono=False),
+    ]
+
+    # The graph is intentionally a clean fan-out/fan-in shape.  The cards use
+    # node_svg, so their geometry and status vocabulary cannot drift from the UI.
+    def localized(key: str) -> dict[str, str]:
+        return {language: copy[language][key] for language in copy}
+
+    def step(step_id: str, title_key: str, capability: str) -> dict[str, object]:
+        return {
+            "id": step_id,
+            "title": localized(title_key),
+            "kind": "capability",
+            "capability": capability,
+        }
+
+    steps = {
+        "normalize": step("normalize", "normalize", "genotype.variant_normalize"),
+        "pca": step("pca", "pca", "genotype.plink_pca"),
+        "phenotype": step("phenotype", "phenotype", "phenotype.prepare"),
+        "kinship": step("kinship", "kinship", "genotype.kinship"),
+        "scan_yield": step("scan_yield", "scan_yield", "gwas.scan_yield"),
+        "scan_depth": step("scan_depth", "scan_depth", "gwas.scan_depth"),
+        "scan_height": step("scan_height", "scan_height", "gwas.scan_height"),
+        "qc_yield": step("qc_yield", "qc_yield", "gwas.qc_yield"),
+        "qc_depth": step("qc_depth", "qc_depth", "gwas.qc_depth"),
+        "qc_height": step("qc_height", "qc_height", "gwas.qc_height"),
+    }
+    # A report card is drawn separately so the branch count remains obvious;
+    # the executable example adds the same fan-in as an answer step.
+    positions = {
+        "normalize": (598, 92),
+        "pca": (350, 220),
+        "phenotype": (598, 220),
+        "kinship": (846, 220),
+        "scan_yield": (350, 350),
+        "scan_depth": (598, 350),
+        "scan_height": (846, 350),
+        "qc_yield": (350, 480),
+        "qc_depth": (598, 480),
+        "qc_height": (846, 480),
+    }
+    tracks = {
+        "normalize": [(0, "succeeded")],
+        "pca": [(0, "running"), (2.8, "succeeded")],
+        "phenotype": [(0, "running"), (2.8, "succeeded")],
+        "kinship": [(0, "running"), (2.8, "succeeded")],
+        "scan_yield": [(0, "pending"), (3.1, "running"), (6.2, "succeeded")],
+        "scan_depth": [(0, "pending"), (3.1, "running"), (6.2, "succeeded")],
+        "scan_height": [(0, "pending"), (3.1, "running"), (6.2, "succeeded")],
+        "qc_yield": [(0, "pending"), (6.5, "running"), (8.6, "succeeded")],
+        "qc_depth": [(0, "pending"), (6.5, "running"), (8.6, "succeeded")],
+        "qc_height": [(0, "pending"), (6.5, "running"), (8.6, "succeeded")],
+    }
+    report = {
+        "id": "report",
+        "title": localized("report"),
+        "kind": "answer",
+        "capability": None,
+    }
+    positions["report"] = (598, 610)
+    tracks["report"] = [(0, "pending"), (8.9, "running"), (11.0, "succeeded")]
+    steps["report"] = report
+
+    edges = [
+        ("normalize", "pca"), ("normalize", "phenotype"), ("normalize", "kinship"),
+        ("pca", "scan_yield"),
+        ("phenotype", "scan_depth"),
+        ("kinship", "scan_height"),
+        ("scan_yield", "qc_yield"), ("scan_depth", "qc_depth"), ("scan_height", "qc_height"),
+        ("qc_yield", "report"), ("qc_depth", "report"), ("qc_height", "report"),
+    ]
+
+    def node_bottom(node_id: str) -> tuple[int, int]:
+        x, y = positions[node_id]
+        return x + NODE_W // 2, y + NODE_H
+
+    def node_top(node_id: str) -> tuple[int, int]:
+        x, y = positions[node_id]
+        return x + NODE_W // 2, y
+
+    def tones(node_id: str) -> list[tuple[float, str]]:
+        track = tracks[node_id]
+        running = next((time for time, state in track if state == "running"), None)
+        succeeded = next((time for time, state in track if state == "succeeded"), None)
+        if running is None:
+            return [(0, "done" if succeeded is not None else "idle")]
+        result: list[tuple[float, str]] = [(0, "active" if running == 0 else "idle")]
+        if running > 0:
+            result.append((running, "active"))
+        if succeeded is not None:
+            result.append((succeeded, "done"))
+        return result
+
+    # Draw edges before cards, so every connector tucks underneath its target.
+    for parent, child in edges:
+        out.append(edge_svg(node_bottom(parent), node_top(child), tones(child), 12.0))
+    out.append(
+        f'<rect x="410" y="185" width="600" height="24" rx="12" fill="#eef4fb" '
+        f'stroke="#b8cde4" stroke-width="1"/>'
+    )
+    out.append(
+        f'<text x="710" y="201" class="m" font-size="9.5" font-weight="700" fill="{RUN}" '
+        f'text-anchor="middle">{esc(t["branch"])}</text>'
+    )
+    for node_id, node in steps.items():
+        out.append(node_svg(*positions[node_id], node, tracks[node_id], 12.0, lang))
+
+    # Point at the fan-out without adding another competing colour or icon.
+    out += [
+        f'<path d="M290,250 C330,250 330,250 340,250" fill="none" stroke="{ACCENT}" '
+        f'stroke-width="1.4" stroke-dasharray="4 4"/>',
+        f'<path d="M332,246 L340,250 L332,254 Z" fill="{ACCENT}"/>',
+        caption(204, 240, "publish → run" if lang == "en" else "发布 → 执行", ACCENT, 9.5),
+        f'<text x="28" y="712" class="m" font-size="10" fill="{INK3}">'
+        f'<tspan fill="{ACCENT}">▸ </tspan>{esc(t["footer"])}</text>',
+    ]
+    out.append("</svg>")
+    return "\n".join(out)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  Figure 3 — kind decides who may write the step
 # ════════════════════════════════════════════════════════════════════════════
 
 def step_kinds(lang: str = "en") -> str:
@@ -730,7 +1000,7 @@ def step_kinds(lang: str = "en") -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  Figure 3 — the step transition table, as a machine
+#  Figure 4 — the step transition table, as a machine
 # ════════════════════════════════════════════════════════════════════════════
 
 def step_lifecycle(lang: str = "en") -> str:
@@ -813,7 +1083,7 @@ def step_lifecycle(lang: str = "en") -> str:
 
 
 # ════════════════════════════════════════════════════════════════════════════
-#  Figure 4 — the four zones of a session
+#  Figure 5 — the four zones of a session
 # ════════════════════════════════════════════════════════════════════════════
 
 def session_zones(lang: str = "en") -> str:
@@ -880,6 +1150,7 @@ def session_zones(lang: str = "en") -> str:
 if __name__ == "__main__":
     here = pathlib.Path(__file__).parent
     for name, builder in (
+        ("workbench-tour", workbench),
         ("plan-execution", hero),
         ("step-kinds", step_kinds),
         ("step-lifecycle", step_lifecycle),

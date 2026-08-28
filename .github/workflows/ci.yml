@@ -58,6 +58,7 @@ jobs:
         run: python -m pip install -e "packages/core[dev]"
       - name: Scripted examples need no API key
         run: |
+          python examples/00-workbench-tour/run.py
           python examples/01-gwas-discovery/run_scripted.py
           python examples/02-literature-meta/run_scripted.py
           python examples/03-objectives-and-scheduling/run.py

@@ -27,6 +27,7 @@ npm-debug.log*
 notes/
 scratch/
 docs/internal/
+docs/_internal/
 docs/plans/
 *.notes.md
 extraction-notes.md

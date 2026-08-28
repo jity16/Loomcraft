@@ -40,6 +40,11 @@ All notable changes to LoomCraft. Dates are ISO-8601.
 - `NodeResult.skip()`, `NodeContext.dependencies`, `NodeContext.adopt_artifact`,
   `Engine(max_retained_runs=…)`, `plan.diff_plans`, `plan.task_phase`.
 - Generated JSON Schema for the plan, event and tool contracts, checked in CI.
+- **Workbench Tour example.** An eleven-step fan-out/fan-in plan makes the
+  measured parallel window, retry, artifact flow, and pre-execution approval
+  gate visible without an API key.
+- **README refresh.** The landing page now leads with the agent → broker →
+  engine → renderer boundary and a visual workbench before the API detail.
 
 ### Fixed
 

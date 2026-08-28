@@ -25,6 +25,16 @@ SKIP_DIRS = {
     ".ruff_cache",
     ".mypy_cache",
 }
+SKIP_FILES = {
+    # Local working notes are deliberately ignored by the repository.  The
+    # checker must make the same distinction, otherwise a stale note can make
+    # a clean checkout pass while a developer workspace fails.
+    "extraction-notes.md",
+    "integration-comparison.md",
+    "migration.md",
+    "TODO.md",
+}
+SKIP_PATH_PARTS = {"internal", "_internal", "plans", "notes", "scratch"}
 
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 IMPORT_FROM = re.compile(r"^from (loomcraft(?:\.\w+)*) import ([^\n#]+)", re.MULTILINE)
@@ -34,7 +44,9 @@ def markdown_files() -> list[Path]:
     return [
         path
         for path in ROOT.rglob("*.md")
-        if not any(part in SKIP_DIRS for part in path.parts)
+        if path.name not in SKIP_FILES
+        and not any(part in SKIP_DIRS for part in path.parts)
+        and not any(part in SKIP_PATH_PARTS for part in path.parts)
     ]
 
 
