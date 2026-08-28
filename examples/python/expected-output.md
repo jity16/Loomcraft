@@ -8,4 +8,3 @@ print these invariants:
 - two source `step_attempt` events before the join becomes runnable
 - at least two `step_retry` events and one `artifact_registered` event
 - a final `execution_finished` event with status `succeeded`
-

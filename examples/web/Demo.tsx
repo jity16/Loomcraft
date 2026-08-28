@@ -18,4 +18,3 @@ export default function Demo() {
   const [state, setState] = useState(() => reduceEvent(initialState, { event: "plan_published", data: { plan: demoPlan } } as LoomcraftEvent));
   return <LoomcraftWorkbench state={state} />;
 }
-

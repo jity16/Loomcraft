@@ -8,4 +8,3 @@ for untrusted handlers or model processes.
 Please report vulnerabilities privately to the repository maintainers rather
 than opening a public issue with exploit details. Include the affected version,
 minimal reproduction, impact, and a suggested mitigation when available.
-
