@@ -43,7 +43,7 @@ Everything below follows from those three.
 
 A **plan** is a versioned DAG the agent publishes through the `publish_plan`
 tool. It carries a `goal`, an optional `summary`, a `revision`, an optional
-`reason`, and 1–24 steps.
+`reason`, and 1–256 steps (24 is the recommended readable default).
 
 ```python
 {
@@ -63,7 +63,7 @@ Each step has:
 | `title` | Human-readable, shown on the node |
 | `kind` | Who is allowed to complete it — see below |
 | `depends_on` | Steps that must **succeed** before this one may start |
-| `capability` | Registered capability/workflow id (required for those kinds only) |
+| `capability` | Registered capability/workflow id (required for capability/workflow; optional for a review-only capability) |
 | `description` | Optional detail for the reader |
 | `status` | Server-owned: `pending` → `running` → `succeeded`/`failed`/`skipped` |
 | `summary` | Server-owned: what happened |
@@ -103,7 +103,8 @@ what the step is about.
 | `review` | Explicit verification of artifacts before relying on them | agent, via `update_step` |
 | `answer` | Composing the final reply | agent, via `update_step` |
 
-`update_step` refuses `capability` and `workflow` steps outright:
+`update_step` refuses `capability` and `workflow` steps outright, and also refuses
+a `review` step when it is bound to a review-scoped capability:
 
 ```python
 await broker.dispatch("update_step", {"step_id": "clean", "status": "succeeded"})
@@ -118,6 +119,10 @@ with a real result — so downstream steps and the final answer rest on somethin
 `dynamic` and `review` are honestly self-reported, and that is the right trade:
 the agent *is* the executor there, so the alternative is not having those steps
 at all. Make them observable by having the agent register artifacts.
+
+A review may instead bind a capability whose runner starts with `review.` or
+whose catalog tags include `review`. Such a step follows the server-owned
+`run_capability` path and cannot be completed with `update_step`.
 
 ---
 
@@ -171,6 +176,9 @@ runner ends up re-validating by hand.
 `max_attempts`, `retry_backoff_seconds`, `timeout_seconds`, and
 `requires_approval` are declared on the capability, so retry semantics live next
 to the work rather than in the caller.
+
+`requires_approval=True` is a pre-execution gate: the engine pauses before it
+invokes the runner and supplies `ctx.config["approved"] = True` after approval.
 
 ---
 
@@ -237,6 +245,7 @@ async def profile(ctx: NodeContext) -> NodeResult:
 | `NodeResult.fail(msg)` | Failed permanently — **do not** retry |
 | `NodeResult.retry(msg)` | Failed transiently — retry if budget remains |
 | `NodeResult.needs_approval(msg)` | Park until a human decides |
+| `NodeResult.skip(msg)` | Mark this node skipped intentionally |
 
 `fail` vs `retry` is the one to get right. A malformed input file is `fail` —
 running it again cannot help, and retrying wastes the budget and delays the
@@ -330,7 +339,7 @@ Everything observable is an event on an append-only, hash-chained log.
 | `artifact_registered` | A deliverable is recorded |
 | `input_required` / `_fulfilled` / `_cancelled` / `_invalidated` | The file-request lifecycle |
 | `approval_required` / `_resolved` | A human gate |
-| `tool_call` / `tool_result` | Agent activity (stream-only, not persisted) |
+| `tool_call` / `tool_result` | Agent activity; hosts may persist or stream these |
 | `message` / `message_delta` / `notice` / `error` / `done` | Conversation and turn lifecycle |
 
 Each line commits to the previous one and a sidecar cursor pins the log's
@@ -372,7 +381,8 @@ When something fails, the agent publishes a higher revision with a `reason`:
 ```
 
 Rules: revisions must increase; a revision replacing an earlier plan must carry a
-`reason`; you cannot replace a plan while a step is `running`. Old revisions are
+`reason`; you cannot replace a plan while a step is `running` or
+`waiting_approval`. Old revisions are
 retained, and the renderer offers a revision switcher.
 
 Artifacts survive a replan — completed work is not thrown away just because the

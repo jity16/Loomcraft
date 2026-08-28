@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
+import json
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -39,10 +41,10 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence
 
 from .context import EmittedArtifact, InputFile, LogLevel, NodeContext, NodeResult
-from .errors import RegistryError
+from .errors import RegistryError, SourceError
 from .graph import layers, validate as validate_graph
-from .registry import Capability, Registry, Workflow
-from .store import Session
+from .registry import Capability, Registry, StepResult, Workflow
+from .store import Session, public_artifact
 
 NodeStatus = Literal[
     "pending", "running", "waiting_approval", "succeeded", "failed", "skipped", "cancelled"
@@ -53,6 +55,7 @@ RunStatus = Literal[
 
 TERMINAL_NODE: frozenset[str] = frozenset({"succeeded", "failed", "skipped", "cancelled"})
 TERMINAL_RUN: frozenset[str] = frozenset({"succeeded", "failed", "cancelled"})
+MAX_RESULT_DETAIL_BYTES = 256 * 1024
 
 
 # ── Graph model ─────────────────────────────────────────────────────────────
@@ -75,6 +78,17 @@ class ExecutionNode:
     max_attempts: int = 1
     retry_backoff_seconds: float = 1.0
     requires_approval: bool = False
+    on_failure: Literal["stop", "continue", "require_approval"] = "stop"
+    #: Optional per-graph adapter. When present it is used instead of looking
+    #: up ``runner`` in the registry; this lets the Plan adapter execute
+    #: dynamic/review/answer steps without mutating the global catalog.
+    runner_fn: Callable[[NodeContext], Any] | None = None
+    #: Map an upstream artifact port to the runner-facing input key.
+    input_ports: Mapping[str, str] = field(default_factory=dict)
+    #: Optional filename suffix allowlist per runner-facing input key.
+    input_extensions: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    retry_backoff_multiplier: float = 2.0
+    retry_max_backoff_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +98,7 @@ class ExecutionGraph:
     id: str
     name: str
     nodes: tuple[ExecutionNode, ...]
-    kind: Literal["capability", "workflow"] = "capability"
+    kind: Literal["capability", "workflow", "plan"] = "capability"
     source_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -128,6 +142,8 @@ def graph_from_capability(
         name=capability.name,
         runner=capability.runner,
         inputs={key: tuple(value) for key, value in sources.items()},
+        input_ports={item.effective_port: item.key for item in capability.inputs},
+        input_extensions={item.key: item.allowed_extensions for item in capability.inputs},
         parameters=dict(parameters),
         config=dict(capability.config),
         outputs=tuple(port.name for port in capability.outputs),
@@ -167,6 +183,11 @@ def graph_from_workflow(
                 runner=spec.runner,
                 depends_on=tuple(spec.depends_on),
                 inputs=bound,
+                input_extensions={
+                    item.key: item.allowed_extensions
+                    for item in workflow.inputs
+                    if item.key in spec.inputs
+                },
                 parameters=dict(parameters),
                 config=dict(spec.config),
                 outputs=tuple(port.name for port in spec.outputs),
@@ -213,7 +234,7 @@ class NodeState:
             "error": self.error,
             "detail": self.detail,
             "duration_seconds": self.duration_seconds,
-            "artifacts": list(self.artifacts),
+            "artifacts": [public_artifact(item) for item in self.artifacts],
         }
 
 
@@ -230,6 +251,10 @@ class Run:
         self.started_at = time.monotonic()
         self.finished_at: float | None = None
         self.error: str | None = None
+        # Optional owner-facing step id when a single capability/workflow graph
+        # is launched from a published Plan. The engine itself remains graph-
+        # oriented; the broker uses this for state projection/approval routing.
+        self.plan_step_id: str | None = None
 
         self._engine = engine
         self._wake = asyncio.Event()
@@ -238,6 +263,7 @@ class Run:
         self._driver: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._approvals: dict[str, bool] = {}
+        self._preapproved: set[str] = set()
 
     # ── Public control surface ──────────────────────────────────────────────
 
@@ -304,8 +330,15 @@ class Run:
     @property
     def artifacts(self) -> list[dict[str, Any]]:
         collected: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for state in self.nodes.values():
-            collected.extend(state.artifacts)
+            for artifact in state.artifacts:
+                identity = str(artifact.get("id") or artifact.get("source_ref") or "")
+                if identity and identity in seen:
+                    continue
+                if identity:
+                    seen.add(identity)
+                collected.append(artifact)
         return collected
 
     @property
@@ -328,7 +361,7 @@ class Run:
             "error": self.error,
             "nodes": {key: state.to_dict() for key, state in self.nodes.items()},
             "failed_nodes": self.failed_nodes,
-            "artifacts": self.artifacts,
+            "artifacts": [public_artifact(item) for item in self.artifacts],
         }
 
     # ── Internals ───────────────────────────────────────────────────────────
@@ -350,12 +383,14 @@ class Engine:
         session: Session,
         *,
         max_parallel: int = 8,
+        max_retained_runs: int = 128,
         emit: Callable[[str, Mapping[str, Any]], Any] | None = None,
         stream_logs: bool = False,
     ) -> None:
         self.registry = registry
         self.session = session
         self.max_parallel = max(1, max_parallel)
+        self.max_retained_runs = max(1, int(max_retained_runs))
         self._emit = emit or (lambda name, data: session.emit(name, data))
         self.stream_logs = stream_logs
         self._runs: dict[str, Run] = {}
@@ -365,8 +400,11 @@ class Engine:
 
     def submit(self, graph: ExecutionGraph, *, run_id: str | None = None) -> Run:
         """Start a run in the background and return its handle immediately."""
+        self._prune_runs()
         missing = [
-            node.runner for node in graph.nodes if not self.registry.has_runner(node.runner)
+            node.runner
+            for node in graph.nodes
+            if node.runner_fn is None and not self.registry.has_runner(node.runner)
         ]
         if missing:
             raise RegistryError(
@@ -378,6 +416,17 @@ class Engine:
         run.status = "running"
         run._driver = asyncio.create_task(self._drive(run), name=f"loomcraft-drive-{identifier}")
         return run
+
+    def _prune_runs(self) -> None:
+        excess = len(self._runs) - self.max_retained_runs + 1
+        if excess <= 0:
+            return
+        for identifier, run in list(self._runs.items()):
+            if excess <= 0:
+                break
+            if run.status in TERMINAL_RUN:
+                self._runs.pop(identifier, None)
+                excess -= 1
 
     async def execute(self, graph: ExecutionGraph, *, run_id: str | None = None) -> Run:
         """Submit and await a graph in one call."""
@@ -410,6 +459,7 @@ class Engine:
                     return
 
                 self._apply_approvals(run)
+                self._gate_ready_approvals(run)
                 self._propagate_skips(run)
 
                 runnable = self._runnable(run)
@@ -471,13 +521,53 @@ class Engine:
 
     def _runnable(self, run: Run) -> list[str]:
         statuses = {key: state.status for key, state in run.nodes.items()}
+        policies = {node.id: node.on_failure for node in run.graph.nodes}
         ready: list[str] = []
         for node in run.graph.nodes:
             if statuses[node.id] != "pending":
                 continue
-            if all(statuses.get(dep) == "succeeded" for dep in node.depends_on):
+            if self._dependencies_ready(node, statuses, policies):
                 ready.append(node.id)
         return ready
+
+    @staticmethod
+    def _dependencies_ready(
+        node: ExecutionNode,
+        statuses: Mapping[str, str],
+        policies: Mapping[str, str],
+    ) -> bool:
+        return all(
+            statuses.get(dep) == "succeeded"
+            or (
+                statuses.get(dep) in {"failed", "skipped"}
+                and policies.get(dep) == "continue"
+            )
+            for dep in node.depends_on
+        )
+
+    def _gate_ready_approvals(self, run: Run) -> None:
+        """Park approval-gated nodes before their runner performs side effects."""
+        statuses = {key: state.status for key, state in run.nodes.items()}
+        policies = {node.id: node.on_failure for node in run.graph.nodes}
+        for node in run.graph.nodes:
+            state = run.nodes[node.id]
+            if (
+                state.status == "pending"
+                and node.requires_approval
+                and node.id not in run._preapproved
+                and self._dependencies_ready(node, statuses, policies)
+            ):
+                state.status = "waiting_approval"
+                state.error = f"approval required before executing {node.name}"
+                self._emit(
+                    "execution_progress",
+                    {
+                        "execution_id": run.id,
+                        "node_id": node.id,
+                        "status": "waiting_approval",
+                        "attempt": 0,
+                    },
+                )
 
     def _propagate_skips(self, run: Run) -> None:
         changed = True
@@ -490,6 +580,11 @@ class Engine:
                     continue
                 if any(
                     statuses.get(dep) in {"failed", "skipped", "cancelled"}
+                    and next(
+                        (candidate.on_failure for candidate in run.graph.nodes if candidate.id == dep),
+                        "stop",
+                    )
+                    != "continue"
                     for dep in node.depends_on
                 ):
                     state.status = "skipped"
@@ -510,9 +605,16 @@ class Engine:
             state = run.nodes.get(node_id)
             if state is None or state.status != "waiting_approval":
                 continue
-            state.status = "succeeded" if approved else "failed"
-            state.error = None if approved else "rejected by reviewer"
-            state.finished_at = time.monotonic()
+            node = run.graph.node(node_id)
+            if approved and node.requires_approval and state.attempts == 0:
+                run._preapproved.add(node_id)
+                state.status = "pending"
+                state.error = None
+                state.finished_at = None
+            else:
+                state.status = "succeeded" if approved else "failed"
+                state.error = None if approved else "rejected by reviewer"
+                state.finished_at = time.monotonic()
             run._approvals.pop(node_id, None)
             self._emit(
                 "approval_resolved",
@@ -539,7 +641,7 @@ class Engine:
 
     async def _run_node(self, run: Run, node: ExecutionNode) -> None:
         state = run.nodes[node.id]
-        runner = self.registry.runner(node.runner)
+        runner = node.runner_fn or self.registry.runner(node.runner)
         attempts = max(1, node.max_attempts)
 
         try:
@@ -567,29 +669,70 @@ class Engine:
                     state.error = f"input binding failed: {exc}"
                     break
 
+                emitted_artifacts: list[EmittedArtifact] = []
+                adopted_artifacts: list[dict[str, Any]] = []
+                config = dict(node.config)
+                if node.id in run._preapproved:
+                    config["approved"] = True
                 ctx = NodeContext(
                     run_id=run.id,
                     node_id=node.id,
                     attempt=attempt,
                     inputs=inputs,
+                    dependencies={
+                        dependency: (
+                            run.nodes[dependency].detail.get("output", run.nodes[dependency].detail)
+                            if dependency in run.nodes
+                            else None
+                        )
+                        for dependency in node.depends_on
+                    },
                     parameters=dict(node.parameters),
-                    config=dict(node.config),
+                    config=config,
                     workdir=self.session.run_dir(run.id) / node.id / f"attempt-{attempt}",
                     outputs=node.outputs,
                     on_log=self._node_logger(run),
                     on_progress=self._node_progress(run),
-                    on_artifact=self._node_artifact(run, node, state),
+                    on_artifact=emitted_artifacts.append,
+                    on_adopted_artifact=adopted_artifacts.append,
                     cancel_event=run._cancel,
                 )
 
                 try:
                     async with self._semaphore:
+                        async def invoke(
+                            current_runner: Callable[[NodeContext], Any] = runner,
+                            current_context: NodeContext = ctx,
+                        ) -> Any:
+                            value = current_runner(current_context)
+                            return await value if inspect.isawaitable(value) else value
+
                         if node.timeout_seconds:
-                            result = await asyncio.wait_for(
-                                runner(ctx), timeout=node.timeout_seconds
-                            )
+                            raw_result = await asyncio.wait_for(invoke(), timeout=node.timeout_seconds)
                         else:
-                            result = await runner(ctx)
+                            raw_result = await invoke()
+                        if isinstance(raw_result, NodeResult):
+                            result = raw_result
+                        else:
+                            compatible = StepResult.from_value(raw_result)
+                            result = NodeResult(
+                                status=(
+                                    "succeeded"
+                                    if compatible.status == "succeeded"
+                                    else "failed"
+                                ),
+                                error=compatible.error,
+                                detail={
+                                    **dict(compatible.metadata),
+                                    "output": compatible.output,
+                                    **(
+                                        {"summary": compatible.summary}
+                                        if compatible.summary
+                                        else {}
+                                    ),
+                                },
+                                retryable=compatible.retryable,
+                            )
                 except asyncio.CancelledError:
                     state.status = "cancelled"
                     state.error = "cancelled"
@@ -601,6 +744,30 @@ class Engine:
                 except Exception as exc:  # noqa: BLE001 - stable runner boundary
                     result = NodeResult.fail(f"{type(exc).__name__}: {exc}")
 
+                try:
+                    encoded_detail = json.dumps(
+                        result.detail, ensure_ascii=False, allow_nan=False
+                    ).encode("utf-8")
+                    if len(encoded_detail) > MAX_RESULT_DETAIL_BYTES:
+                        raise ValueError("result detail exceeds the 256 KiB limit")
+                except (TypeError, ValueError):
+                    result = NodeResult.fail(
+                        "node result detail is not JSON-serializable or exceeds 256 KiB"
+                    )
+
+                if result.status in {"succeeded", "waiting_approval"}:
+                    try:
+                        adopt = self._adopt_node_artifact(state)
+                        for record in adopted_artifacts:
+                            adopt(record)
+                        self._register_node_artifacts(
+                            run, node, state, emitted_artifacts
+                        )
+                    except Exception as exc:  # noqa: BLE001 - artifact boundary
+                        result = NodeResult.fail(
+                            f"artifact registration failed: {type(exc).__name__}: {exc}"
+                        )
+
                 state.detail = dict(result.detail)
                 if result.status == "succeeded":
                     state.status = "succeeded"
@@ -610,13 +777,25 @@ class Engine:
                     state.status = "waiting_approval"
                     state.error = result.error
                     break
+                if result.status == "skipped":
+                    state.status = "skipped"
+                    state.error = result.error
+                    break
 
                 state.error = result.error or "node failed"
                 should_retry = result.retryable and attempt < attempts and not run.cancelled
                 if not should_retry:
-                    state.status = "failed"
+                    state.status = (
+                        "waiting_approval"
+                        if node.on_failure == "require_approval"
+                        else "failed"
+                    )
                     break
-                delay = node.retry_backoff_seconds * (2 ** (attempt - 1))
+                delay = max(0.0, node.retry_backoff_seconds) * (
+                    max(1.0, node.retry_backoff_multiplier) ** (attempt - 1)
+                )
+                if node.retry_max_backoff_seconds is not None:
+                    delay = min(max(0.0, node.retry_max_backoff_seconds), delay)
                 self._emit(
                     "execution_progress",
                     {
@@ -670,6 +849,7 @@ class Engine:
             files: list[InputFile] = []
             for ref in refs:
                 resolved = self.session.resolve_source(ref)
+                self._validate_input_extension(node, key, resolved.filename)
                 files.append(
                     InputFile(
                         key=key,
@@ -686,20 +866,36 @@ class Engine:
         for dependency in node.depends_on:
             for artifact in run.nodes[dependency].artifacts:
                 port = str(artifact.get("port_name") or "output")
-                bound.setdefault(port, []).append(
+                key = str(node.input_ports.get(port, port))
+                source_ref = str(artifact.get("source_ref") or "")
+                if not source_ref:
+                    raise SourceError("upstream artifact is missing its source reference")
+                resolved = self.session.resolve_source(source_ref)
+                self._validate_input_extension(node, key, resolved.filename)
+                bound.setdefault(key, []).append(
                     InputFile(
-                        key=port,
-                        path=self.session.root / str(artifact["relpath"]),
-                        filename=str(artifact["filename"]),
-                        size=int(artifact["size"]),
-                        checksum=str(artifact["checksum"]),
-                        source_ref=str(artifact.get("source_ref", "")),
-                        content_type=str(
-                            artifact.get("content_type", "application/octet-stream")
-                        ),
+                        key=key,
+                        path=resolved.path,
+                        filename=resolved.filename,
+                        size=resolved.size,
+                        checksum=resolved.checksum,
+                        source_ref=resolved.source_ref,
+                        content_type=resolved.content_type,
                     )
                 )
         return bound
+
+    @staticmethod
+    def _validate_input_extension(
+        node: ExecutionNode, key: str, filename: str
+    ) -> None:
+        allowed = tuple(node.input_extensions.get(key, ()))
+        if allowed and not filename.casefold().endswith(
+            tuple(extension.casefold() for extension in allowed)
+        ):
+            raise SourceError(
+                f"input {key!r} filename does not match its allowed extensions"
+            )
 
     def _node_logger(self, run: Run) -> Callable[[str, LogLevel, str], None]:
         def log(node_id: str, level: LogLevel, message: str) -> None:
@@ -732,21 +928,49 @@ class Engine:
 
         return progress
 
-    def _node_artifact(
-        self, run: Run, node: ExecutionNode, state: NodeState
-    ) -> Callable[[EmittedArtifact], None]:
-        def register(artifact: EmittedArtifact) -> None:
+    def _register_node_artifacts(
+        self,
+        run: Run,
+        node: ExecutionNode,
+        state: NodeState,
+        artifacts: Sequence[EmittedArtifact],
+    ) -> None:
+        """Promote only outputs from a successful/paused attempt.
+
+        A retry may emit a partial file before discovering a transient failure.
+        Deferring registration keeps those bytes out of downstream bindings and
+        prevents a failed attempt from becoming a user-visible deliverable.
+        """
+        for artifact in artifacts:
             record = self.session.add_artifact(
                 artifact.path,
                 port_name=artifact.port_name,
                 display_name=artifact.filename,
+                content_type=artifact.content_type,
+                step_id=(
+                    run.plan_step_id
+                    or (node.id if run.graph.kind == "plan" else None)
+                ),
                 run_id=run.id,
                 node_id=node.id,
             )
             state.artifacts.append(record)
-            self._emit("artifact_registered", {"artifact": record})
+            self._emit("artifact_registered", {"artifact": public_artifact(record)})
 
-        return register
+    def _adopt_node_artifact(
+        self, state: NodeState
+    ) -> Callable[[Mapping[str, Any]], None]:
+        def adopt(record: Mapping[str, Any]) -> None:
+            source_ref = str(record.get("source_ref") or "")
+            if not source_ref:
+                raise SourceError("adopted artifact is missing its source reference")
+            self.session.resolve_source(source_ref)
+            artifact_id = str(record.get("id") or source_ref)
+            if any(str(item.get("id") or item.get("source_ref")) == artifact_id for item in state.artifacts):
+                return
+            state.artifacts.append(dict(record))
+
+        return adopt
 
 
 def scratch_workdir(session: Session, run_id: str, node_id: str) -> Path:
@@ -764,6 +988,7 @@ __all__ = [
     "RunStatus",
     "TERMINAL_NODE",
     "TERMINAL_RUN",
+    "MAX_RESULT_DETAIL_BYTES",
     "graph_from_capability",
     "graph_from_workflow",
     "scratch_workdir",

@@ -172,6 +172,7 @@ export function Timeline({
               </li>
             );
           case "input_request":
+          case "input":
             return (
               <li key={item.id} className="lc-timeline__item lc-timeline__item--request">
                 <span className="lc-timeline__role">Files needed</span>

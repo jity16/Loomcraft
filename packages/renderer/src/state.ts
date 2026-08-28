@@ -47,10 +47,13 @@ export const initialLoomState: LoomState = {
 const STEP_KINDS: StepKind[] = ["answer", "capability", "workflow", "dynamic", "review"];
 const STEP_STATUSES: StepStatus[] = [
   "pending",
+  "ready",
   "running",
+  "waiting_approval",
   "succeeded",
   "failed",
   "skipped",
+  "cancelled",
 ];
 
 // ── Coercion helpers ────────────────────────────────────────────────────────
@@ -95,6 +98,16 @@ export function parsePlan(value: unknown): Plan | null {
       status: STEP_STATUSES.includes(status) ? status : "pending",
       summary: typeof step.summary === "string" ? step.summary : null,
       execution: Object.keys(record(step.execution)).length ? record(step.execution) : null,
+      attempts: num(step.attempts),
+      retry: Object.keys(record(step.retry)).length
+        ? (record(step.retry) as PlanStep["retry"])
+        : undefined,
+      timeout_seconds: num(step.timeout_seconds) ?? null,
+      on_failure:
+        step.on_failure === "continue" || step.on_failure === "require_approval"
+          ? step.on_failure
+          : "stop",
+      metadata: record(step.metadata),
     });
   }
   if (!steps.length) return null;
@@ -105,6 +118,12 @@ export function parsePlan(value: unknown): Plan | null {
     revision: row.revision,
     reason: typeof row.reason === "string" ? row.reason : null,
     steps,
+    analysis_profile: typeof row.analysis_profile === "string" ? row.analysis_profile : null,
+    objectives: Array.isArray(row.objectives) ? (row.objectives as Plan["objectives"]) : [],
+    analysis_coverage: Array.isArray(row.analysis_coverage)
+      ? (row.analysis_coverage as Plan["analysis_coverage"])
+      : [],
+    metadata: record(row.metadata),
   };
 }
 
@@ -124,6 +143,8 @@ function parseArtifact(value: unknown): Artifact | null {
     step_id: typeof row.step_id === "string" ? row.step_id : null,
     run_id: typeof row.run_id === "string" ? row.run_id : null,
     download_url: text(row.download_url) || undefined,
+    path: typeof row.path === "string" ? row.path : null,
+    output_key: text(row.output_key) || undefined,
   };
 }
 
@@ -144,6 +165,7 @@ function parseUpload(value: unknown): Upload | null {
     content_type: text(row.content_type) || undefined,
     source_ref: text(row.source_ref) || `upload:${id}`,
     created_at: text(row.created_at) || undefined,
+    path: text(row.path) || undefined,
   };
 }
 
@@ -164,7 +186,7 @@ export function parseInputRequest(value: unknown): InputRequest | null {
       field_hints: stringList(requirement.field_hints),
     };
   });
-  if (!requestId || !requirements.length) return null;
+  if (!requestId) return null;
   return {
     request_id: requestId,
     title: text(row.title) || "Additional files needed",
@@ -181,7 +203,27 @@ function parseExecution(
 ): Execution | null {
   const row = { ...fallback, ...record(value) };
   const kind = text(row.kind || row.execution_kind);
-  if (kind !== "capability" && kind !== "workflow") return null;
+  if (kind !== "capability" && kind !== "workflow" && kind !== "plan" && kind !== "dag") return null;
+  const normalizedKind = kind === "dag" ? "plan" : kind;
+  const nodes: Record<string, NodeProgress> = {};
+  for (const [nodeId, value] of Object.entries(record(row.nodes))) {
+    if (typeof value === "string") {
+      nodes[nodeId] = { node_id: nodeId, status: value };
+      continue;
+    }
+    const node = record(value);
+    nodes[nodeId] = {
+      node_id: text(node.node_id) || nodeId,
+      status: text(node.status) || "pending",
+      attempt: num(node.attempt) ?? num(node.attempts),
+      max_attempts: num(node.max_attempts),
+      fraction: num(node.fraction),
+      message: text(node.message) || undefined,
+      error: typeof node.error === "string" ? node.error : null,
+      retry_in_seconds: num(node.retry_in_seconds),
+      duration_seconds: num(node.duration_seconds),
+    };
+  }
   return {
     id:
       typeof row.id === "string"
@@ -189,7 +231,7 @@ function parseExecution(
         : typeof row.execution_id === "string"
           ? row.execution_id
           : null,
-    kind,
+    kind: normalizedKind,
     capability: text(row.capability),
     status: text(row.status) || "running",
     step_id: text(row.step_id) || undefined,
@@ -201,7 +243,12 @@ function parseExecution(
         )
       : [],
     artifacts: parseArtifacts(row.artifacts),
-    nodes: undefined,
+    nodes: Object.keys(nodes).length ? nodes : undefined,
+    run_url: typeof row.run_url === "string" ? row.run_url : null,
+    current_slot: typeof row.current_slot === "string" ? row.current_slot : null,
+    slots: Object.keys(record(row.slots)).length
+      ? (record(row.slots) as Record<string, string>)
+      : undefined,
   };
 }
 
@@ -209,9 +256,11 @@ function parseExecution(
 
 function withPlan(state: LoomState, plan: Plan): LoomState {
   const exists = state.plans.some((item) => item.revision === plan.revision);
+  const shouldBeCurrent =
+    state.currentPlan === null || plan.revision >= state.currentPlan.revision;
   return {
     ...state,
-    currentPlan: plan,
+    currentPlan: shouldBeCurrent ? plan : state.currentPlan,
     plans: exists
       ? state.plans.map((item) => (item.revision === plan.revision ? plan : item))
       : [...state.plans, plan].sort((a, b) => a.revision - b.revision),
@@ -294,6 +343,13 @@ export function appendUserMessage(state: LoomState, message: string): LoomState 
 
 /** Fold one event into state. Pure; never throws on malformed input. */
 export function reduceLoomEvent(state: LoomState, incoming: LoomEvent): LoomState {
+  if (
+    typeof incoming.seq === "number" &&
+    incoming.seq > 0 &&
+    incoming.seq <= state.lastSeq
+  ) {
+    return state;
+  }
   const data = record(incoming.data);
   const at = incoming.ts;
   const seq = typeof incoming.seq === "number" && incoming.seq > 0 ? incoming.seq : state.lastSeq;
@@ -319,18 +375,80 @@ export function reduceLoomEvent(state: LoomState, incoming: LoomEvent): LoomStat
       return updated ? withPlan(base, updated) : base;
     }
 
+    case "step_attempt": {
+      const stepId = text(data.step_id);
+      const attempt = num(data.attempt);
+      const target = base.currentPlan;
+      if (!target || !stepId || attempt === undefined) return base;
+      const updated = parsePlan({
+        ...target,
+        steps: target.steps.map((item) =>
+          item.id === stepId
+            ? { ...item, attempts: attempt, status: "running" }
+            : item,
+        ),
+      });
+      return updated ? withPlan(base, updated) : base;
+    }
+
+    case "step_retry": {
+      const stepId = text(data.step_id);
+      const attempt = num(data.next_attempt) ?? num(data.attempt);
+      const message = text(data.error) || "retry scheduled";
+      const target = base.currentPlan;
+      const updated = target && stepId && attempt !== undefined
+        ? parsePlan({
+            ...target,
+            steps: target.steps.map((item) =>
+              item.id === stepId
+                ? { ...item, attempts: attempt, status: "running", summary: message }
+                : item,
+            ),
+          })
+        : null;
+      const next = updated ? withPlan(base, updated) : base;
+      return {
+        ...next,
+        timeline: message
+          ? [
+              ...next.timeline,
+              {
+                kind: "notice",
+                id: `retry-${next.timeline.length + 1}`,
+                text: `${stepId || "step"}: retrying — ${message}`,
+                at,
+              },
+            ]
+          : next.timeline,
+      };
+    }
+
     case "execution_started": {
       const execution = parseExecution(data);
       if (!execution) return base;
       return withExecutionTimeline(upsertExecution(base, execution), execution, at);
     }
 
-    case "execution_progress": {
+    case "execution_progress":
+    case "step_progress": {
       const executionId = text(data.execution_id);
       const nodeId = text(data.node_id);
-      if (!executionId || !nodeId) return base;
+      if (!executionId) return base;
       const index = base.executions.findIndex((item) => item.id === executionId);
       if (index < 0) return base;
+      if (!nodeId && data.nodes && typeof data.nodes === "object" && !Array.isArray(data.nodes)) {
+        const executions = [...base.executions];
+        const nodeMap = { ...(executions[index].nodes ?? {}) };
+        for (const [id, status] of Object.entries(data.nodes as Record<string, unknown>)) {
+          nodeMap[id] = {
+            node_id: id,
+            status: typeof status === "string" ? status : "running",
+          };
+        }
+        executions[index] = { ...executions[index], nodes: nodeMap };
+        return { ...base, executions };
+      }
+      if (!nodeId) return base;
       const progress: NodeProgress = {
         node_id: nodeId,
         status: text(data.status) || "running",
@@ -367,7 +485,8 @@ export function reduceLoomEvent(state: LoomState, incoming: LoomEvent): LoomStat
       return { ...base, artifacts: [...base.artifacts, artifact] };
     }
 
-    case "input_required": {
+    case "input_required":
+    case "input_request": {
       const request = parseInputRequest(data.request ?? data);
       if (!request) return base;
       const id = `input-request-${request.request_id}`;
@@ -476,8 +595,11 @@ export function reduceLoomEvent(state: LoomState, incoming: LoomEvent): LoomStat
             kind: "tool",
             id,
             tool: text(data.tool) || "tool",
+            command: text(data.command) || undefined,
+            toolKind: text(data.kind) || undefined,
             stepId: text(data.step_id) || undefined,
             status: "running",
+            exit: null,
             at,
           },
         ],
@@ -496,7 +618,12 @@ export function reduceLoomEvent(state: LoomState, incoming: LoomEvent): LoomStat
                 ...item,
                 status: "done",
                 ok: data.ok !== false,
+                command: text(data.command) || item.command,
+                toolKind: text(data.kind) || item.toolKind,
                 stepId: text(data.step_id) || item.stepId,
+                exit:
+                  num(data.exit_code) ??
+                  (typeof data.exit === "number" ? data.exit : item.exit),
                 ...(error ? { error } : {}),
                 ...(errorCode ? { errorCode } : {}),
               }
@@ -505,7 +632,8 @@ export function reduceLoomEvent(state: LoomState, incoming: LoomEvent): LoomStat
       };
     }
 
-    case "node_log": {
+    case "node_log":
+    case "step_log": {
       const message = text(data.message).trim();
       if (!message) return base;
       return {
@@ -612,8 +740,18 @@ export function hydrateLoomState(history: History): LoomState {
   let state = initialLoomState;
 
   for (const value of history.plans ?? []) {
-    const plan = parsePlan(value);
+    const row = record(value);
+    const plan = parsePlan(row.plan ?? value);
     if (plan) state = withPlan(state, plan);
+    for (const event of Array.isArray(row.events) ? row.events : []) {
+      const eventRow = record(event);
+      state = reduceLoomEvent(state, {
+        seq: num(eventRow.seq),
+        event: text(eventRow.event),
+        data: eventRow.data,
+        ts: text(eventRow.ts) || undefined,
+      });
+    }
   }
 
   for (const value of history.events ?? []) {
@@ -650,6 +788,31 @@ export function hydrateLoomState(history: History): LoomState {
     .map(parseUpload)
     .filter((item): item is Upload => item !== null);
 
+  // Some hosts persist the chat transcript separately from the event log.
+  // Replay it when present, while keeping the canonical event-only path
+  // unchanged.
+  for (const value of history.messages ?? []) {
+    const row = record(value);
+    const role = text(row.role);
+    const message = text(row.text || row.message).trim();
+    if (!message || !["user", "assistant", "notice", "error"].includes(role)) continue;
+    const kind = role as "user" | "assistant" | "notice" | "error";
+    state = {
+      ...state,
+      timeline: [
+        ...state.timeline,
+        {
+          kind,
+          id: `history-${kind}-${state.timeline.length + 1}`,
+          ...(kind === "user" || kind === "assistant"
+            ? { text: message }
+            : { text: message }),
+          at: text(row.ts) || undefined,
+        } as TimelineItem,
+      ],
+    };
+  }
+
   return { ...state, executions, artifacts, uploads, done: true };
 }
 
@@ -658,8 +821,8 @@ export function hydrateLoomState(history: History): LoomState {
 export function deriveTaskPhase(state: LoomState, busy: boolean): TaskPhase {
   const steps = state.currentPlan?.steps ?? [];
   if (steps.length > 0) {
-    if (steps.some((step) => step.status === "running")) return "executing";
-    if (steps.every((step) => ["succeeded", "failed", "skipped"].includes(step.status))) {
+    if (steps.some((step) => step.status === "running" || step.status === "waiting_approval")) return "executing";
+    if (steps.every((step) => ["succeeded", "failed", "skipped", "cancelled"].includes(step.status))) {
       return "completed";
     }
     return busy ? "executing" : "planned";
@@ -708,20 +871,26 @@ export function planProgress(plan: Plan | null): {
   failed: number;
   running: number;
   pending: number;
+  ready: number;
+  waiting_approval: number;
   skipped: number;
+  cancelled: number;
   fraction: number;
 } {
   const steps = plan?.steps ?? [];
   const count = (status: StepStatus) =>
     steps.filter((step) => step.status === status).length;
-  const settled = count("succeeded") + count("failed") + count("skipped");
+  const settled = count("succeeded") + count("failed") + count("skipped") + count("cancelled");
   return {
     total: steps.length,
     succeeded: count("succeeded"),
     failed: count("failed"),
     running: count("running"),
     pending: count("pending"),
+    ready: count("ready"),
+    waiting_approval: count("waiting_approval"),
     skipped: count("skipped"),
+    cancelled: count("cancelled"),
     fraction: steps.length ? settled / steps.length : 0,
   };
 }
@@ -729,11 +898,16 @@ export function planProgress(plan: Plan | null): {
 /** Steps that could start right now — useful for "what happens next" hints. */
 export function readySteps(plan: Plan | null): PlanStep[] {
   if (!plan) return [];
-  const statuses = new Map(plan.steps.map((step) => [step.id, step.status]));
+  const byId = new Map(plan.steps.map((step) => [step.id, step]));
   return plan.steps.filter(
     (step) =>
-      step.status === "pending" &&
-      step.depends_on.every((id) => statuses.get(id) === "succeeded"),
+      (step.status === "pending" || step.status === "ready") &&
+      step.depends_on.every((id) => {
+        const dependency = byId.get(id);
+        return dependency?.status === "succeeded" ||
+          ((dependency?.status === "failed" || dependency?.status === "skipped") &&
+            dependency.on_failure === "continue");
+      }),
   );
 }
 
@@ -744,9 +918,21 @@ export function pendingInputRequests(state: LoomState): InputRequest[] {
   ]);
   return state.timeline
     .filter(
-      (item): item is Extract<TimelineItem, { kind: "input_request" }> =>
-        item.kind === "input_request",
+      (item): item is Extract<TimelineItem, { kind: "input_request" | "input" }> =>
+        item.kind === "input_request" || item.kind === "input",
     )
     .map((item) => item.request)
     .filter((request) => !resolved.has(request.request_id));
 }
+
+// Names exported by the pre-monorepo renderer. They intentionally point at the
+// same pure reducer/hydrator so live updates and history replay cannot diverge.
+export const initialState = initialLoomState;
+export const reduceEvent = reduceLoomEvent;
+export const hydrateState = hydrateLoomState;
+export const appendIntelligentUser = appendUserMessage;
+export const initialIntelligentState = initialLoomState;
+export const reduceIntelligentEvent = reduceLoomEvent;
+export const hydrateIntelligentState = hydrateLoomState;
+export const deriveIntelligentTaskPhase = deriveTaskPhase;
+export const orientationActivitiesFromTimeline = orientationActivities;

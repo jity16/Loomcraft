@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loomcraft.dev/schema/tools-v1.json",
+  "title": "LoomcraftToolSpec",
+  "type": "object",
+  "required": ["type", "name", "description", "inputSchema"],
+  "properties": {
+    "type": {"const": "function"},
+    "name": {"type": "string", "minLength": 1},
+    "description": {"type": "string"},
+    "inputSchema": {"type": "object"},
+    "function": {"type": "object"}
+  }
+}

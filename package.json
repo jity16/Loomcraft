@@ -1,0 +1,16 @@
+{
+  "name": "loomcraft",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-native DAG planning and rendering toolkit",
+  "license": "MIT",
+  "workspaces": ["packages/renderer"],
+  "scripts": {
+    "build": "npm run build:renderer",
+    "test": "npm run test:renderer",
+    "build:renderer": "npm --workspace packages/renderer run build",
+    "test:renderer": "npm --workspace packages/renderer run test",
+    "typecheck:renderer": "npm --workspace packages/renderer run typecheck",
+    "check": "npm run typecheck:renderer && npm run build:renderer && npm run test:renderer"
+  }
+}

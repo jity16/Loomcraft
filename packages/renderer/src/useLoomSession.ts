@@ -236,11 +236,16 @@ export function useLoomSession(options: UseLoomSessionOptions): UseLoomSession {
       if (!sessionId) return;
       try {
         await client.approveNode(sessionId, runId, nodeId, approved);
+        // The model turn normally ends at an approval boundary, so there may
+        // be no live POST stream while the engine resumes. Rehydrate the
+        // durable events/state after the approval endpoint reaches the next
+        // pause or terminal state.
+        await refresh();
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
       }
     },
-    [client, sessionId],
+    [client, refresh, sessionId],
   );
 
   const download = useCallback(

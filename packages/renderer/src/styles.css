@@ -453,6 +453,16 @@
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--lc-run) 6%, transparent);
 }
 
+.lc-node--ready {
+  background: color-mix(in srgb, var(--lc-accent) 2.5%, var(--lc-surface));
+  border-color: color-mix(in srgb, var(--lc-accent) 25%, transparent);
+}
+
+.lc-node--waiting_approval {
+  background: color-mix(in srgb, var(--lc-warn, #d9a441) 4%, var(--lc-surface));
+  border-color: color-mix(in srgb, var(--lc-warn, #d9a441) 30%, transparent);
+}
+
 .lc-node--succeeded {
   background: color-mix(in srgb, var(--lc-ok) 2.5%, var(--lc-surface));
   border-color: color-mix(in srgb, var(--lc-ok) 25%, transparent);
@@ -464,6 +474,7 @@
 }
 
 .lc-node--skipped { background: var(--lc-sunken); opacity: 0.7; }
+.lc-node--cancelled { background: var(--lc-sunken); opacity: 0.55; }
 
 .lc-node--selected {
   border-color: var(--lc-accent);
@@ -510,6 +521,9 @@
 .lc-node__dot--running { background: var(--lc-run); animation: lc-pulse 1.4s ease-in-out infinite; }
 .lc-node__dot--succeeded { background: var(--lc-ok); }
 .lc-node__dot--failed { background: var(--lc-err); }
+.lc-node__dot--waiting_approval { background: var(--lc-warn, #d9a441); }
+.lc-node__dot--ready { background: var(--lc-accent); }
+.lc-node__dot--cancelled { background: var(--lc-idle); }
 
 @keyframes lc-pulse {
   0%, 100% { opacity: 1; }
@@ -575,6 +589,8 @@
 .lc-tag--succeeded { color: var(--lc-ok); background: var(--lc-ok-wash); }
 .lc-tag--running { color: var(--lc-run); background: var(--lc-run-wash); }
 .lc-tag--failed { color: var(--lc-err); background: var(--lc-err-wash); }
+.lc-tag--skipped, .lc-tag--cancelled { color: var(--lc-ink-3); background: var(--lc-sunken); }
+.lc-tag--ready, .lc-tag--waiting_approval { color: var(--lc-accent); background: var(--lc-accent-wash); }
 
 /* ── Panels ────────────────────────────────────────────────────────────── */
 

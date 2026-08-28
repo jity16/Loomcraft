@@ -58,6 +58,10 @@ class TestOrdering(unittest.TestCase):
             graph.topological_order(adjacency),
         )
 
+    def test_topological_ties_are_globally_ordered_by_id(self):
+        adjacency = {"b": [], "z": [], "a": ["b"]}
+        self.assertEqual(graph.topological_order(adjacency), ["b", "a", "z"])
+
     def test_topological_order_rejects_cycles(self):
         with self.assertRaises(ValueError):
             graph.topological_order({"a": ["b"], "b": ["a"]})

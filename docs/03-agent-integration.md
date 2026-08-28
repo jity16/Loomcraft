@@ -4,7 +4,7 @@ How a model drives LoomCraft: the tool surface, the loop, provider adapters,
 prompting, and the guardrails you get for free.
 
 - [The tool surface](#the-tool-surface)
-- [The ten tools](#the-ten-tools)
+- [The ten core tools and extensions](#the-ten-core-tools-plus-opt-in-host-extensions)
 - [Provider dialects](#provider-dialects)
 - [The loop](#the-loop)
 - [Using Claude](#using-claude)
@@ -43,7 +43,7 @@ tool_specs(include_workflows=False,     # no workflows registered
 
 ---
 
-## The ten tools
+## The ten core tools (plus opt-in host extensions)
 
 ### Read-only
 
@@ -54,7 +54,7 @@ gathering evidence is always safe.
 | --- | --- |
 | `session_context` | Uploads, current plan, past executions, artifacts, catalog summary. Cheap; call it first. |
 | `capability_search` | Find registered capabilities by task description. Returns full contracts. |
-| `catalog_search` | Search capabilities *and* workflows, with a `scope` filter. |
+| `catalog_search` | Search capabilities/workflows and optional host metadata, with a `scope` filter. |
 | `inspect_source` | Bounded preview of one session-owned file. Binary-safe. |
 
 ### Mutating
@@ -134,7 +134,10 @@ across messages trains the model out of parallel tool use.
 **Bound the loop.** `max_iterations` prevents a pathological session from running
 forever; the broker's per-turn budget is the second line of defence.
 
-`execute_tool_calls` handles the batch and emits the UI events:
+`execute_tool_calls` handles the batch and emits the UI events. Independent
+agent calls may be submitted together, while the broker still refuses
+overlapping direct executions; use `execute_plan` when the graph itself should
+run independent nodes in parallel:
 
 ```python
 from loomcraft import execute_tool_calls, ToolCall
@@ -199,6 +202,44 @@ result = await agent.run_turn(broker, "Assess the uploaded table.")
 ```
 
 Same broker, same validation, same events. The loop differs only in wire format.
+
+### Normalized provider loop
+
+如果宿主不想绑定 Anthropic/OpenAI SDK，可实现 `AIProvider.complete(...)`，或直接使用
+内置的 `OpenAICompatibleProvider`（Chat Completions / Responses）、
+`JsonlSubprocessProvider`、`CodexCLIProvider` 和 `ScriptedProvider`。它们都返回同一份
+`AIResponse` / `ToolCall`，再交给 `PlannerAgent`：
+
+```python
+from loomcraft import PlannerAgent, ScriptedProvider
+
+provider = ScriptedProvider([
+    {"tool_calls": [{"id": "c1", "name": "session_context", "arguments": {}}]},
+    {"text": "已完成上下文检查。"},
+])
+result = await PlannerAgent(provider, broker, max_rounds=8).run(
+    "先检查当前任务上下文。"
+)
+assert result.status == "completed"
+```
+
+`PlannerAgent` 使用扩展工具目录（包括 `execute_plan` 和可选的 knowledge/table 工具），
+并把每次调用交给同一个 `ToolBroker`；Provider 本身绝不执行工具。真实模型可通过：
+
+```python
+import os
+from loomcraft import OpenAICompatibleProvider
+
+provider = OpenAICompatibleProvider(
+    api_key=os.environ["OPENAI_API_KEY"],
+    model="gpt-4.1-mini",
+    protocol="responses",  # 或 "chat"
+)
+```
+
+自定义 Provider 只需返回 `AIResponse(text=..., tool_calls=[ToolCall(...)])`；不要把密钥、
+原始响应头或宿主绝对路径写入事件。`provider_from_env()` 可从显式的
+`LOOMCRAFT_API_KEY/BASE_URL/MODEL/PROTOCOL` 变量构造同一适配器。
 
 ---
 

@@ -43,6 +43,91 @@ from .events import Event, EventLog, MemoryEventLog
 CHUNK = 8 * 1024 * 1024
 MAX_ARTIFACT_BATCH = 12
 SAFE_NAME = re.compile(r"[^A-Za-z0-9._-]+")
+SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+_PUBLIC_ARTIFACT_FIELDS = (
+    "id",
+    "filename",
+    "display_name",
+    "size",
+    "checksum",
+    "content_type",
+    "port_name",
+    "step_id",
+    "run_id",
+    "node_id",
+    "created_at",
+    "source_ref",
+    "download_url",
+)
+
+
+def public_artifact(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Return artifact metadata safe to expose beyond the host process."""
+    return {
+        key: record[key]
+        for key in _PUBLIC_ARTIFACT_FIELDS
+        if key in record and record[key] is not None
+    }
+
+
+def public_execution(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Remove host filesystem details from an execution snapshot."""
+    value = {
+        key: item
+        for key, item in record.items()
+        if key not in {"path", "workspace_path", "resolved_path", "command", "argv"}
+    }
+    if isinstance(value.get("artifacts"), list):
+        value["artifacts"] = [
+            public_artifact(item)
+            for item in value["artifacts"]
+            if isinstance(item, Mapping)
+        ]
+    steps = value.get("steps")
+    if isinstance(steps, Mapping):
+        value["steps"] = {
+            str(step_id): (
+                {
+                    **dict(step),
+                    "artifacts": [
+                        public_artifact(item)
+                        for item in (
+                            step.get("artifacts", [])
+                            if isinstance(step.get("artifacts", []), list)
+                            else []
+                        )
+                        if isinstance(item, Mapping)
+                    ],
+                }
+                if isinstance(step, Mapping)
+                else step
+            )
+            for step_id, step in steps.items()
+        }
+    return value
+
+
+def public_plan(plan: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Return a plan snapshot without nested host paths in execution records."""
+    if not isinstance(plan, Mapping):
+        return None
+    value = dict(plan)
+    steps = value.get("steps")
+    if isinstance(steps, list):
+        value["steps"] = [
+            (
+                {
+                    **dict(step),
+                    "execution": public_execution(step["execution"])
+                    if isinstance(step.get("execution"), Mapping)
+                    else step.get("execution"),
+                }
+                if isinstance(step, Mapping)
+                else step
+            )
+            for step in steps
+        ]
+    return value
 
 
 def _utcnow() -> str:
@@ -66,6 +151,10 @@ def _atomic_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
     os.replace(tmp, path)
 
 
@@ -124,6 +213,10 @@ class Session:
         self._lock = threading.RLock()
         for directory in (self.uploads_dir, self.artifacts_dir, self.scratch_dir, self.control_dir):
             directory.mkdir(parents=True, exist_ok=True)
+            try:
+                directory.chmod(0o700)
+            except OSError:
+                pass
         self.events = event_log or EventLog(self.control_dir / "events.jsonl")
 
     # ── Layout ──────────────────────────────────────────────────────────────
@@ -147,6 +240,10 @@ class Session:
     def run_dir(self, run_id: str) -> Path:
         path = self.artifacts_dir / safe_filename(run_id, "run")
         path.mkdir(parents=True, exist_ok=True)
+        try:
+            path.chmod(0o700)
+        except OSError:
+            pass
         return path
 
     # ── Metadata ────────────────────────────────────────────────────────────
@@ -222,6 +319,10 @@ class Session:
                         handle.write(chunk)
                 if size == 0:
                     raise SourceError("refusing to store an empty upload")
+                try:
+                    target.chmod(0o600)
+                except OSError:
+                    pass
                 if self.total_upload_bytes() + size > self.max_session_bytes:
                     raise SourceError("session upload quota exceeded")
             except BaseException:
@@ -357,6 +458,7 @@ class Session:
         *,
         port_name: str = "output",
         display_name: str | None = None,
+        content_type: str | None = None,
         step_id: str | None = None,
         run_id: str | None = None,
         node_id: str | None = None,
@@ -376,6 +478,11 @@ class Session:
                 shutil.move(str(origin), target)
             else:
                 shutil.copy2(origin, target)
+            try:
+                folder.chmod(0o700)
+                target.chmod(0o600)
+            except OSError:
+                pass
             checksum, size = _digest(target)
             record = {
                 "id": artifact_id,
@@ -383,7 +490,8 @@ class Session:
                 "display_name": display_name or name,
                 "size": size,
                 "checksum": checksum,
-                "content_type": mimetypes.guess_type(name)[0]
+                "content_type": content_type
+                or mimetypes.guess_type(name)[0]
                 or "application/octet-stream",
                 "relpath": str(target.relative_to(self.root)),
                 "port_name": port_name,
@@ -531,12 +639,12 @@ class Session:
         """Everything the renderer needs to rebuild state after a reload."""
         return {
             "session": self.meta(),
-            "current_plan": self.current_plan(),
-            "plans": self.plan_history(),
+            "current_plan": public_plan(self.current_plan()),
+            "plans": [public_plan(item) for item in self.plan_history()],
             "events": [event.to_dict() for event in self.events.read(after_seq=after_seq)],
             "uploads": self.list_uploads(),
-            "executions": self.list_executions(),
-            "artifacts": self.list_artifacts(),
+            "executions": [public_execution(item) for item in self.list_executions()],
+            "artifacts": [public_artifact(item) for item in self.list_artifacts()],
         }
 
     def emit(self, event: str, data: Mapping[str, Any] | None = None) -> Event:
@@ -565,6 +673,10 @@ class SessionStore:
 
     def create(self, session_id: str | None = None) -> Session:
         with self._lock:
+            if session_id is not None and SESSION_ID.fullmatch(session_id) is None:
+                raise SourceError("session id is invalid")
+            if session_id is not None and self.get(session_id) is not None:
+                raise SourceError("session already exists")
             if len(self.list_ids()) >= self.max_sessions:
                 raise SourceError("session limit reached for this store")
             sid = session_id or f"lc-{secrets.token_hex(8)}"
@@ -574,6 +686,8 @@ class SessionStore:
 
     def get(self, session_id: str) -> Session | None:
         with self._lock:
+            if not isinstance(session_id, str) or SESSION_ID.fullmatch(session_id) is None:
+                return None
             if session_id in self._cache:
                 return self._cache[session_id]
             path = self.root / safe_filename(session_id)
@@ -610,4 +724,7 @@ __all__ = [
     "Session",
     "SessionStore",
     "safe_filename",
+    "public_artifact",
+    "public_execution",
+    "public_plan",
 ]

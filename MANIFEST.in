@@ -1,0 +1,11 @@
+include README.md README.en.md LICENSE CHANGELOG.md
+recursive-include packages/core/schema *.json README.md
+recursive-include packages/renderer/src *.css
+recursive-include docs *.md
+recursive-include examples *.py *.json *.tsx *.html *.md
+recursive-include assets *.svg
+exclude docs/extraction-notes.md
+exclude docs/migration.md
+exclude docs/integration-comparison.md
+prune docs/_internal
+exclude assets/build_diagrams.py

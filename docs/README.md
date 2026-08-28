@@ -1,29 +1,23 @@
-# LoomCraft documentation
+# Loomcraft 文档
 
-| Guide | Read it for |
-| --- | --- |
-| [01 · Concepts](01-concepts.md) | The model: plans, step kinds, capabilities, sessions, source refs, events |
-| [02 · Defining plans](02-defining-plans.md) | Plan schema, every validation rule, the step state machine, replanning |
-| [03 · Agent integration](03-agent-integration.md) | The ten tools, the loop, Claude/OpenAI/MCP, prompting, guardrails |
-| [04 · Frontend integration](04-frontend-integration.md) | The reducer, SSE, components, theming, custom and non-React UIs |
-| [05 · Extending](05-extending.md) | Runners, capabilities, workflows, storage, transports, agents, production |
-| [06 · Architecture](06-architecture.md) | Design decisions and why the obvious alternatives fail |
-| [07 · API reference](07-api-reference.md) | Every public symbol, tool, event, and endpoint |
+下面列出的内容都是面向使用者和集成者的公开文档；实现过程中的工作记录不属于发布文档。
 
-## Reading paths
+- [架构说明](architecture.md)：层次、生命周期、状态机、调度与部署。
+- [Plan 定义](plan-definition.md)：字段、kind、DAG 校验、重试、输入请求。
+- [Agent 工具](agent-tools.md)：publish_plan、ToolBroker、Provider 和 tool-loop。
+- [前端集成](frontend-integration.md)：React renderer、SSE、主题和无障碍。
+- [扩展指南](extending.md)：注册业务能力、存储、知识库、审批和自定义 Provider。
+- [API 速查](api-reference.md)：Python、TypeScript、事件名称。
 
-**"I want to try it."** → [README quick start](../README.md#quick-start), then
-`python examples/01-gwas-discovery/run_scripted.py`.
+深入英文参考：
 
-**"I'm adding my domain."** → [Concepts](01-concepts.md) §Capability →
-[Extending](05-extending.md) §Writing runners → the
-[production checklist](05-extending.md#production-checklist).
+- [Concepts](01-concepts.md)
+- [Defining plans](02-defining-plans.md)
+- [Agent integration](03-agent-integration.md)
+- [Frontend integration](04-frontend-integration.md)
+- [Extending LoomCraft](05-extending.md)
+- [Architecture decisions](06-architecture.md)
+- [API reference](07-api-reference.md)
 
-**"I'm wiring up a model."** → [Agent integration](03-agent-integration.md), then
-[Defining plans](02-defining-plans.md) for what the server will accept.
-
-**"I'm building the UI."** → [Frontend integration](04-frontend-integration.md),
-and [`examples/01-gwas-discovery/web/index.html`](../examples/01-gwas-discovery/web/index.html)
-for a dependency-free port of the protocol.
-
-**"I want to know why it works this way."** → [Architecture](06-architecture.md).
+机器可读的契约位于 [Plan](../packages/core/schema/plan.schema.json)、[Event](../packages/core/schema/event.schema.json)
+和 [Tools](../packages/core/schema/tools.schema.json)。可执行示例位于 [examples/python](../examples/python/)。

@@ -5,12 +5,12 @@
  * searchable) sitting over an SVG edge layer, both inside one transformed
  * container. That keeps text crisp at any zoom while the edges get real curves.
  *
- * Accessibility: the graph is `aria-hidden` and paired with a visually hidden
- * ordered list stating each step, its status, and its dependencies — a DAG whose
- * only representation is spatial is unusable with a screen reader.
+ * Accessibility: every node is a keyboard-focusable button with an accessible
+ * label stating its kind, status, and dependencies; the decorative edge layer
+ * is hidden from assistive technology.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { fitToViewport, layoutPlan, type LayoutOptions } from "../layout";
 import type { Plan, PlanStep, StepKind, StepStatus } from "../types";
@@ -47,10 +47,13 @@ const KIND_GLYPH: Record<StepKind, string> = {
 
 const STATUS_LABEL: Record<StepStatus, string> = {
   pending: "Pending",
+  ready: "Ready",
   running: "Running",
+  waiting_approval: "Waiting for approval",
   succeeded: "Succeeded",
   failed: "Failed",
   skipped: "Skipped",
+  cancelled: "Cancelled",
 };
 
 const MIN_ZOOM = 0.3;
@@ -82,7 +85,11 @@ function PlanGraphNode({
         selected && "lc-node--selected",
       )}
       data-step-id={step.id}
-      tabIndex={-1}
+      aria-label={`${step.title}. ${KIND_LABEL[step.kind]}. ${STATUS_LABEL[step.status]}. ${
+        step.depends_on.length
+          ? `Depends on ${step.depends_on.join(", ")}`
+          : "No dependencies"
+      }`}
     >
       <span className="lc-node__head">
         <span className="lc-node__glyph" aria-hidden="true">
@@ -116,6 +123,7 @@ export function PlanGraph({
   controls = true,
 }: PlanGraphProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const markerPrefix = `lc-arrow-${useId().replace(/:/g, "")}`;
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [transform, setTransform] = useState({ scale: 1, translateX: 0, translateY: 0 });
   const [userMoved, setUserMoved] = useState(false);
@@ -250,20 +258,6 @@ export function PlanGraph({
         </p>
       )}
 
-      {/* Screen-reader equivalent of the spatial graph. */}
-      <ol className="lc-sr-only" aria-label={`Plan revision ${plan.revision} steps`}>
-        {plan.steps.map((step) => (
-          <li key={step.id}>
-            {step.title}. Kind: {KIND_LABEL[step.kind]}. Status:{" "}
-            {STATUS_LABEL[step.status]}.{" "}
-            {step.depends_on.length
-              ? `Depends on ${step.depends_on.join(", ")}.`
-              : "No dependencies."}
-            {step.summary ? ` ${step.summary}` : ""}
-          </li>
-        ))}
-      </ol>
-
       <div
         ref={containerRef}
         className="lc-graph__canvas"
@@ -282,19 +276,19 @@ export function PlanGraph({
             width: layout.width,
             height: layout.height,
           }}
-          aria-hidden="true"
         >
           <svg
             className="lc-graph__edges"
             width={layout.width}
             height={layout.height}
             viewBox={`0 0 ${layout.width} ${layout.height}`}
+            aria-hidden="true"
           >
             <defs>
               {["idle", "active", "done"].map((tone) => (
                 <marker
                   key={tone}
-                  id={`lc-arrow-${tone}`}
+                  id={`${markerPrefix}-${tone}`}
                   viewBox="0 0 10 10"
                   refX="9"
                   refY="5"
@@ -328,7 +322,7 @@ export function PlanGraph({
                     `lc-edge--${tone}`,
                     edge.long && "lc-edge--long",
                   )}
-                  markerEnd={`url(#lc-arrow-${tone})`}
+                  markerEnd={`url(#${markerPrefix}-${tone})`}
                 />
               );
             })}

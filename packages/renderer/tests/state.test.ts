@@ -142,6 +142,50 @@ test("execution_finished merges its artifacts into the session list", () => {
   assert.equal(state.artifacts[0].filename, "loaded.csv");
 });
 
+test("persisted execution nodes hydrate their final attempts and status", () => {
+  const state = hydrateLoomState({
+    executions: [
+      {
+        id: "run-1",
+        kind: "plan",
+        status: "succeeded",
+        artifacts: [],
+        nodes: {
+          profile: {
+            node_id: "profile",
+            status: "succeeded",
+            attempts: 3,
+            duration_seconds: 0.4,
+          },
+        },
+      },
+    ],
+  });
+  assert.equal(state.executions[0].nodes?.profile.status, "succeeded");
+  assert.equal(state.executions[0].nodes?.profile.attempt, 3);
+});
+
+test("compatibility histories can hydrate transcript messages and string node maps", () => {
+  const state = hydrateLoomState({
+    messages: [
+      { role: "user", text: "Inspect this" },
+      { role: "assistant", text: "I will inspect it" },
+    ],
+    executions: [
+      {
+        id: "run-2",
+        kind: "plan",
+        status: "running",
+        artifacts: [],
+        nodes: { load: "succeeded" },
+      },
+    ],
+  });
+  assert.equal(state.timeline.filter((item) => item.kind === "user").length, 1);
+  assert.equal(state.timeline.filter((item) => item.kind === "assistant").length, 1);
+  assert.equal(state.executions[0].nodes?.load.status, "succeeded");
+});
+
 test("duplicate artifact ids are not double-counted", () => {
   const artifact = { artifact: { id: "art-1", filename: "a.csv", size: 10 } };
   const state = fold([
@@ -393,6 +437,18 @@ test("readySteps reflects the executable frontier", () => {
     readySteps(state.currentPlan).map((step) => step.id).sort(),
     ["chart", "stats"],
   );
+});
+
+test("readySteps honors an upstream continue policy", () => {
+  const plan = parsePlan({
+    goal: "continue",
+    revision: 1,
+    steps: [
+      { id: "failed", title: "Failed", kind: "dynamic", status: "failed", on_failure: "continue" },
+      { id: "next", title: "Next", kind: "answer", status: "pending", depends_on: ["failed"] },
+    ],
+  });
+  assert.deepEqual(readySteps(plan).map((step) => step.id), ["next"]);
 });
 
 test("appendUserMessage clears a prior terminal state", () => {

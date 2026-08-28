@@ -36,6 +36,14 @@ def upload(upload_id, filename):
 
 
 class TestInputRequestValidation(unittest.TestCase):
+    def test_public_error_does_not_echo_rejected_input(self):
+        secret = "secret-token-that-must-not-echo"
+        payload = request(requirement("table"))
+        payload["requirements"][0]["allowed_extensions"] = [secret]
+        with self.assertRaises(InputRequestError) as captured:
+            validate_input_request(payload)
+        self.assertNotIn(secret, captured.exception.public_message)
+
     def test_valid_request_gets_a_server_generated_id(self):
         validated = validate_input_request(request(requirement("table")))
         self.assertRegex(validated["request_id"], r"^input-[0-9a-f]{16}$")
@@ -213,6 +221,36 @@ class TestRegistry(unittest.TestCase):
         )
         self.assertEqual(self.registry.capability("demo.thing").name, "Demo v2")
 
+    def test_replace_can_switch_between_schema_and_typed_contracts(self):
+        self.registry.register_capability(
+            id="demo.thing", name="Schema", handler=lambda _: None
+        )
+        typed = self.registry.register_capability(self.capability(), replace=True)
+        self.assertIs(self.registry.capability("demo.thing"), typed)
+        schema = self.registry.register_capability(
+            id="demo.thing",
+            name="Schema again",
+            handler=lambda _: None,
+            replace=True,
+        )
+        self.assertIs(self.registry.capability("demo.thing"), schema)
+        self.assertEqual(len(self.registry.capabilities), 1)
+
+    def test_schema_metadata_cannot_override_catalog_identity(self):
+        capability = self.registry.register_capability(
+            id="schema.identity",
+            name="Trusted name",
+            metadata={
+                "id": "spoofed",
+                "execution_tool": "delete_everything",
+                "description": "Public description",
+            },
+        )
+        catalog = capability.to_catalog()
+        self.assertEqual(catalog["id"], "schema.identity")
+        self.assertEqual(catalog["execution_tool"], "run_capability")
+        self.assertEqual(catalog["description"], "Public description")
+
     def test_validate_reports_dangling_runner(self):
         self.registry.register_capability(self.capability(runner="missing.runner"))
         problems = self.registry.validate()
@@ -242,6 +280,19 @@ class TestRegistry(unittest.TestCase):
         )
         results = self.registry.search("csv profile")
         self.assertEqual(results[0]["id"], "csv.profile")
+
+    def test_catalog_entries_do_not_expose_execution_paths(self):
+        stored = self.registry.register_catalog_entry(
+            "tools",
+            {
+                "id": "tool.safe",
+                "name": "Safe",
+                "path": "/private/tool",
+                "command": "secret --flag",
+            },
+        )
+        self.assertNotIn("path", stored)
+        self.assertNotIn("command", stored)
 
     def test_merge_combines_catalogs(self):
         other = lc.Registry()
@@ -310,6 +361,10 @@ class TestCapabilityContracts(unittest.TestCase):
         with self.assertRaises(ContractError):
             capability.validate_inputs({"docs": ["upload:1", "upload:1"]})
 
+    def test_input_extensions_are_bounded_and_safe(self):
+        with self.assertRaises(ValueError):
+            lc.CapabilityInput(key="x", name="X", description="x", allowed_extensions=("../secret",))
+
     def test_parameters_apply_defaults(self):
         parameters = self.capability.validate_parameters({})
         self.assertEqual(parameters["maf"], 0.01)
@@ -317,6 +372,11 @@ class TestCapabilityContracts(unittest.TestCase):
     def test_parameters_enforce_bounds(self):
         with self.assertRaises(ContractError):
             self.capability.validate_parameters({"maf": 0.9})
+
+    def test_parameters_reject_non_finite_numbers(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(ContractError):
+                self.capability.validate_parameters({"maf": value})
 
     def test_parameters_enforce_enums(self):
         with self.assertRaises(ContractError):
@@ -335,6 +395,10 @@ class TestCapabilityContracts(unittest.TestCase):
         self.assertEqual(contract["execution_tool"], "run_capability")
         self.assertEqual(len(contract["input_variants"]), 2)
         self.assertIn("maf", contract["parameters"])
+
+    def test_step_result_rejects_an_unknown_status(self):
+        with self.assertRaises(ValueError):
+            lc.StepResult.from_value({"status": "finished-ish"})
 
     def test_workflow_rejects_unknown_input_reference(self):
         with self.assertRaises(Exception):
@@ -399,6 +463,14 @@ class TestToolSpecs(unittest.TestCase):
             lc.tools.PLAN_SCHEMA["properties"]["revision"]["maximum"],
             lc.plan.MAX_REVISION,
         )
+        objectives = lc.tools.PLAN_SCHEMA["properties"]["objectives"]["items"]
+        coverage = lc.tools.PLAN_SCHEMA["properties"]["analysis_coverage"]["items"]
+        self.assertEqual(objectives["required"], ["id", "question"])
+        self.assertEqual(
+            coverage["required"], ["objective_id", "status", "reason"]
+        )
+        self.assertFalse(objectives["additionalProperties"])
+        self.assertFalse(coverage["additionalProperties"])
 
     def test_unknown_dialect_raises(self):
         with self.assertRaises(ValueError):

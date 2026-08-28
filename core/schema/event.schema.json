@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://loomcraft.dev/schema/event-v1.json",
+  "title": "LoomcraftEvent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event", "seq", "data", "ts"],
+  "properties": {
+    "schema": {"const": "loomcraft-event-v1"},
+    "seq": {"type": "integer", "minimum": 1},
+    "event": {"type": "string", "minLength": 1, "maxLength": 120},
+    "data": {"type": "object"},
+    "ts": {"type": "string", "minLength": 1}
+  }
+}

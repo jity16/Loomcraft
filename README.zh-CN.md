@@ -7,12 +7,12 @@
 图由智能体来写。服务端来证明它是安全的。引擎来跑它。
 界面把它画出来 —— 实时地。
 
-[English](README.md) · **简体中文**
+[English](README.en.md) · **简体中文**
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-38bdf8?style=flat-square&logo=python&logoColor=white&labelColor=0b1120)](packages/core/pyproject.toml)
 [![React 18+](https://img.shields.io/badge/react-18+-a78bfa?style=flat-square&logo=react&logoColor=white&labelColor=0b1120)](packages/renderer/package.json)
 [![核心依赖：仅 pydantic](https://img.shields.io/badge/%E6%A0%B8%E5%BF%83%E4%BE%9D%E8%B5%96-%E4%BB%85%20pydantic-fbbf24?style=flat-square&labelColor=0b1120)](packages/core/pyproject.toml)
-[![测试：232 通过](https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-232%20%E9%80%9A%E8%BF%87-34d399?style=flat-square&labelColor=0b1120)](#测试)
+[![测试：346 通过](https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-346%20%E9%80%9A%E8%BF%87-34d399?style=flat-square&labelColor=0b1120)](#测试)
 [![许可证：MIT](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-f472b6?style=flat-square&labelColor=0b1120)](LICENSE)
 
 [快速开始](#快速开始) · [核心概念](#核心概念) · [架构](#架构) · [文档](docs/) · [示例](examples/)
@@ -238,6 +238,9 @@ kind 决定的是**谁有权把这个步骤标记为完成** —— 这才是重
 | `review` | 对已产出产物的显式核验 | 智能体，通过 `update_step` |
 | `answer` | 组织最终回复 | 智能体，通过 `update_step` |
 
+`review` 也可以绑定一个明确限定为复核用途的 capability（`review.*` runner 或带
+`review` tag）。此时只能由 `run_capability` 完成，`update_step` 不能绕过已注册复核。
+
 <div align="center">
 <img src="assets/step-kinds.zh.svg" width="820"
      alt="answer、dynamic、review 三类步骤由智能体自己通过 update_step 写入。capability 和 workflow 只能由 run_capability / run_workflow 写入，它们派发给引擎；对这两类调用 update_step 会被 broker 拒绝。">
@@ -315,9 +318,12 @@ packages/core/src/loomcraft/
 ├── store.py      会话、四个信任区、source ref 解析、产物
 ├── events.py     只追加的哈希链事件日志 + 订阅
 ├── inputs.py     带类型的文件请求 + 上传到槽位的分配
-├── tools.py      10 个智能体工具的 JSON Schema，4 种厂商方言
+├── tools.py      基础与扩展工具的 JSON Schema，4 种厂商方言
 ├── broker.py     唯一的入口：校验并派发每一次工具调用
 ├── agent.py      智能体循环 —— Anthropic、OpenAI 兼容、脚本化
+├── ai.py         Chat/Responses/JSONL/Codex Provider 适配器
+├── plan_executor.py  整图 execute_plan 适配器（复用 Engine）
+├── runtime.py    Runtime 与 FastAPI 组装入口
 └── server.py     可选的 FastAPI 路由：会话、上传、SSE、下载
 
 packages/renderer/src/
@@ -343,11 +349,11 @@ OpenAI Responses 和 MCP 四种方言。不管调用来自哪一种，broker 的
 ```bash
 pip install -e packages/core   # 或者：export PYTHONPATH=packages/core/src
 
-cd packages/core     && python -m unittest discover -s tests   # 187 个测试
-cd packages/renderer && npm ci && npm test                     # 45 个测试
+python -m pytest -q                                      # Python 285 个测试（core 234 + 兼容 51）
+cd packages/renderer && npm ci && npm test                # renderer 61 个测试
 ```
 
-核心测试套件只用标准库跑 —— 不需要 pytest —— 覆盖了 DAG 校验、版本纪律、状态转移机、
+核心测试套件覆盖了 DAG 校验、版本纪律、状态转移机、
 并发、重试、超时、审批、取消、跳过传播、路径穿越、完整性校验、事件日志篡改、
 槽位分配、契约，以及 broker 的每一道防线。
 
@@ -355,7 +361,9 @@ cd packages/renderer && npm ci && npm test                     # 45 个测试
 
 ## 文档
 
-> 详细文档目前只有英文版。
+发布树只包含面向使用者、集成者和扩展开发者的指南；内部工作记录不会进入 GitHub。
+
+> 文档同时保留中文快速入口和英文深度参考；两者都只描述公开 API。
 
 | 指南 | 内容 |
 | --- | --- |

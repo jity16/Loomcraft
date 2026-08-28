@@ -982,9 +982,9 @@ REGISTER = Capability(
 
 @registry.capability_runner(REGISTER)
 async def register_finding(ctx: NodeContext) -> NodeResult:
-    # The engine parks the node here. Only after `run.approve(node_id, True)`
-    # does it count as succeeded — and the side effect is deliberately not
-    # performed before the gate, which is the whole point of returning early.
+    # ``requires_approval=True`` parks the node before this runner is called.
+    # The defensive check also protects hosts that invoke the runner outside
+    # the graph adapter without setting the pre-approval flag.
     if ctx.attempt == 1 and not ctx.config.get("approved"):
         return NodeResult.needs_approval(
             f"about to register the locus in {ctx.input('summary').filename} "

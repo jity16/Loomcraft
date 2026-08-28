@@ -245,6 +245,13 @@ class TestEventLog(unittest.TestCase):
 
 
 class TestSessionStore(SessionCase):
+    def test_session_ids_are_collision_safe(self):
+        with self.assertRaises(SourceError):
+            self.store.create("../s1")
+        with self.assertRaises(SourceError):
+            self.store.create("s1")
+        self.assertIsNone(self.store.get("../s1"))
+
     def test_get_or_create_is_idempotent(self):
         first = self.store.get_or_create("shared")
         second = self.store.get_or_create("shared")
@@ -259,6 +266,27 @@ class TestSessionStore(SessionCase):
             self.assertIn(key, history)
         self.assertEqual(len(history["uploads"]), 1)
         self.assertEqual(len(history["events"]), 1)
+
+    def test_history_artifacts_do_not_expose_storage_relative_paths(self):
+        (self.session.scratch_dir / "out.txt").write_text("out")
+        artifact = self.session.register_scratch_artifacts([{"path": "out.txt"}])[0]
+        self.session.update_current_plan(
+            {
+                "goal": "g",
+                "revision": 1,
+                "steps": [
+                    {
+                        "id": "out",
+                        "title": "Out",
+                        "kind": "dynamic",
+                        "execution": {"artifacts": [artifact]},
+                    }
+                ],
+            }
+        )
+        history = self.session.history()
+        self.assertNotIn("relpath", history["artifacts"][0])
+        self.assertNotIn("relpath", history["current_plan"]["steps"][0]["execution"]["artifacts"][0])
 
     def test_delete_removes_the_directory(self):
         self.assertTrue(self.store.delete("s1"))

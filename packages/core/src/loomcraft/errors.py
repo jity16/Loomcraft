@@ -134,6 +134,10 @@ class InputFulfillmentError(InputRequestError):
     code = "INPUT_REQUEST_UNFULFILLED"
 
 
+# Backward-compatible name used by the first extracted package.
+InputRequestValidationError = InputRequestError
+
+
 # ── Event log ───────────────────────────────────────────────────────────────
 
 
@@ -152,6 +156,10 @@ class BrokerError(LoomCraftError):
 
 class UnsupportedActionError(BrokerError):
     code = "BROKER_ACTION_UNSUPPORTED"
+
+
+class InvalidArgumentError(BrokerError):
+    code = "BROKER_INVALID_ARGUMENT"
 
 
 class ActionBudgetError(BrokerError):
@@ -178,6 +186,12 @@ class ExecutionBusyError(BrokerError):
     code = "BROKER_EXECUTION_BUSY"
 
 
+class KnowledgeUnavailableError(BrokerError):
+    """The pinned knowledge snapshot is unavailable or changed mid-session."""
+
+    code = "BROKER_KNOWLEDGE_UNAVAILABLE"
+
+
 __all__ = [
     "LoomCraftError",
     "PlanValidationError",
@@ -199,11 +213,14 @@ __all__ = [
     "ArtifactError",
     "InputRequestError",
     "InputFulfillmentError",
+    "InputRequestValidationError",
     "EventLogError",
     "BrokerError",
     "UnsupportedActionError",
+    "InvalidArgumentError",
     "ActionBudgetError",
     "RepeatedActionError",
     "AwaitingInputsError",
     "ExecutionBusyError",
+    "KnowledgeUnavailableError",
 ]

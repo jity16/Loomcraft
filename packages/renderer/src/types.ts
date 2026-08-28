@@ -9,7 +9,15 @@
 
 export type StepKind = "answer" | "capability" | "workflow" | "dynamic" | "review";
 
-export type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
+export type StepStatus =
+  | "pending"
+  | "ready"
+  | "running"
+  | "waiting_approval"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "cancelled";
 
 /** What the workbench is doing right now, derived from plan + busy state. */
 export type TaskPhase = "idle" | "orienting" | "planned" | "executing" | "completed";
@@ -20,18 +28,53 @@ export interface PlanStep {
   kind: StepKind;
   depends_on: string[];
   capability: string | null;
-  description: string;
+  description?: string;
   status: StepStatus;
   summary: string | null;
   execution: Record<string, unknown> | null;
+  attempts?: number;
+  retry?: {
+    max_attempts: number;
+    backoff_seconds?: number;
+    backoff_multiplier?: number;
+    max_backoff_seconds?: number;
+  };
+  timeout_seconds?: number | null;
+  on_failure?: "stop" | "continue" | "require_approval";
+  metadata?: Record<string, unknown>;
+}
+
+export interface AnalysisObjective {
+  id: string;
+  question: string;
+  status?: string | null;
+  estimand?: string;
+  independent_unit?: string;
+  expected_outputs?: string[];
+  method_families?: string[];
+  validation_requirements?: string[];
+}
+
+export interface AnalysisCoverage {
+  objective_id: string;
+  status: string;
+  reason: string;
+  selected_method?: string | null;
+  step_ids?: string[];
+  artifact_refs?: string[];
+  next_action?: string | null;
 }
 
 export interface Plan {
   goal: string;
-  summary: string;
+  summary?: string;
   revision: number;
-  reason: string | null;
+  reason?: string | null;
   steps: PlanStep[];
+  analysis_profile?: string | null;
+  objectives?: AnalysisObjective[];
+  analysis_coverage?: AnalysisCoverage[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface Artifact {
@@ -46,11 +89,13 @@ export interface Artifact {
   step_id?: string | null;
   run_id?: string | null;
   download_url?: string;
+  path?: string | null;
+  output_key?: string;
 }
 
 export interface Execution {
   id: string | null;
-  kind: "capability" | "workflow";
+  kind: "capability" | "workflow" | "plan" | string;
   capability: string;
   status: string;
   step_id?: string;
@@ -60,6 +105,13 @@ export interface Execution {
   artifacts: Artifact[];
   /** Per-node progress within this execution, keyed by node id. */
   nodes?: Record<string, NodeProgress>;
+  revision?: number;
+  run_id?: string | null;
+  attempts?: number;
+  run_url?: string | null;
+  current_slot?: string | null;
+  slots?: Record<string, string>;
+  [key: string]: unknown;
 }
 
 export interface NodeProgress {
@@ -101,6 +153,7 @@ export interface Upload {
   content_type?: string;
   source_ref: string;
   created_at?: string;
+  path?: string;
 }
 
 export interface LoomEvent {
@@ -119,9 +172,12 @@ export type TimelineItem =
       kind: "tool";
       id: string;
       tool: string;
+      command?: string;
+      toolKind?: string;
       stepId?: string;
       status: "running" | "done";
       ok?: boolean;
+      exit?: number | null;
       error?: string;
       errorCode?: string;
       at?: string;
@@ -129,12 +185,13 @@ export type TimelineItem =
   | {
       kind: "execution";
       id: string;
-      executionKind: "capability" | "workflow";
+      executionKind: string;
       executionId: string | null;
       stepId?: string;
       at?: string;
     }
   | { kind: "input_request"; id: string; request: InputRequest; at?: string }
+  | { kind: "input"; id: string; request: InputRequest; at?: string }
   | {
       kind: "approval";
       id: string;
@@ -168,6 +225,25 @@ export interface LoomState {
   done: boolean;
 }
 
+// Compatibility aliases for the first extracted renderer API.
+export type LoomcraftEvent<T = unknown> = LoomEvent & { data: T };
+export type LoomcraftState = LoomState;
+export type IntelligentPlan = Plan;
+export type IntelligentPlanStep = PlanStep;
+export type IntelligentAnalysisCoverage = AnalysisCoverage;
+export type IntelligentPlanObjective = AnalysisObjective;
+export type IntelligentEvent = LoomEvent;
+export type IntelligentState = LoomState;
+export type IntelligentExecution = Execution;
+export type IntelligentArtifact = Artifact;
+export type IntelligentFileRequirement = FileRequirement;
+export type IntelligentInputRequest = InputRequest;
+export type IntelligentTimelineItem = TimelineItem;
+export type IntelligentOrientationActivity = OrientationActivity;
+export type IntelligentStepKind = StepKind;
+export type IntelligentStepStatus = StepStatus;
+export type IntelligentTaskPhase = TaskPhase;
+
 export interface History {
   session?: Record<string, unknown>;
   current_plan?: unknown;
@@ -176,4 +252,8 @@ export interface History {
   uploads?: unknown[];
   executions?: unknown[];
   artifacts?: unknown[];
+  /** Optional transcript rows supplied by compatibility hosts. */
+  messages?: unknown[];
 }
+
+export type IntelligentHistory = History;

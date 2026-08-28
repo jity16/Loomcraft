@@ -22,16 +22,16 @@ from loomcraft.plan import ensure_dependencies_succeeded, ensure_step_startable,
 
 | Symbol | Signature / value |
 | --- | --- |
-| `Plan` | Pydantic model: `goal`, `summary`, `revision`, `reason`, `steps` |
+| `Plan` | Pydantic model: goal/revision/steps plus summary, reason, objectives, coverage and metadata |
 | `Plan.adjacency` | `dict[str, list[str]]` |
 | `Plan.by_id` | `dict[str, PlanStep]` |
 | `Plan.layers` | `list[list[str]]` — each inner list may run concurrently |
 | `Plan.step(id)` | `PlanStep`; raises `UnknownStepError` |
-| `Plan.ready_steps()` | Pending steps whose dependencies all succeeded |
-| `Plan.blocked_steps()` | Pending steps with a failed/skipped upstream |
+| `Plan.ready_steps()` | Pending steps whose dependencies succeeded (or failed/skipped with `on_failure=continue`) |
+| `Plan.blocked_steps()` | Pending steps with a stop-policy failed/skipped/cancelled upstream |
 | `Plan.is_complete` | All steps terminal |
 | `Plan.progress` | `{'pending': n, …, 'total': n}` |
-| `PlanStep` | `id`, `title`, `kind`, `depends_on`, `capability`, `description`, `status`, `summary`, `execution` |
+| `PlanStep` | `id`, `title`, `kind`, `depends_on`, optional review capability, execution policy and server state |
 | `parse_plan(raw)` | `Plan`; raises `PlanValidationError` |
 | `validate_plan(raw, current=None, *, registry=None)` | Normalised dict with state reset |
 | `update_step(plan, id, status, *, summary=None, execution=None)` | New plan dict |
@@ -40,8 +40,11 @@ from loomcraft.plan import ensure_dependencies_succeeded, ensure_step_startable,
 | `ensure_dependencies_succeeded(plan, id)` | Raises `DependencyError` |
 | `ensure_step_startable(plan, id, *, kind, capability=None)` | Full precondition check |
 | `STEP_TRANSITIONS` | `{status: frozenset(allowed)}` |
-| `AGENT_REPORTABLE_KINDS` | `{"answer", "dynamic", "review"}` |
-| `MAX_STEPS` / `MAX_REVISION` | `24` / `100` |
+| `AGENT_REPORTABLE_KINDS` | `{"answer", "dynamic", "review"}` (bound review capabilities use `run_capability`) |
+| `MAX_STEPS` / `MAX_REVISION` | `256` / `1,000,000` (`24` is the recommended visual default) |
+
+`RetryPolicy` has `max_attempts`, `backoff_seconds`, `backoff_multiplier`, and
+`max_backoff_seconds`; `max_attempts` counts the initial attempt.
 
 ---
 
@@ -108,7 +111,7 @@ from loomcraft import Registry, Capability, CapabilityInput, Parameter, Port, Wo
 | `timeout_seconds` | `None` | Per attempt |
 | `max_attempts` | `1` | 1–10 |
 | `retry_backoff_seconds` | `1.0` | Exponential |
-| `requires_approval` | `False` | Advisory flag for the UI |
+| `requires_approval` | `False` | Pre-execution human approval gate |
 
 Methods: `validate_inputs(raw)`, `validate_parameters(raw)`, `contract()`,
 `effective_variants`.
@@ -142,7 +145,7 @@ fields as `Capability`.
 from loomcraft import Engine, ExecutionGraph, ExecutionNode, Run, NodeState, NodeContext, NodeResult, graph_from_capability, graph_from_workflow
 ```
 
-### `Engine(registry, session, *, max_parallel=8, emit=None, stream_logs=False)`
+### `Engine(registry, session, *, max_parallel=8, max_retained_runs=128, emit=None, stream_logs=False)`
 
 | Method | Purpose |
 | --- | --- |
@@ -162,16 +165,19 @@ Methods: `await wait()`, `await cancel()`, `approve(node_id, approved=True)`,
 
 ### `NodeContext`
 
-`run_id`, `node_id`, `attempt`, `inputs`, `parameters`, `config`, `workdir`,
-`output_ports`, `cancelled`.
+`run_id`, `node_id`, `attempt`, `inputs`, `dependencies`, `parameters`, `config`,
+`workdir`, `output_ports`, `cancelled`.
 Methods: `input(key)`, `input_list(key)`, `optional_input(key)`, `has_input(key)`,
 `log(msg, level)`, `progress(fraction, msg)`, `emit(port, filename, data, *, content_type=None)`,
 `emit_path(port, path, *, content_type=None)`, `raise_if_cancelled()`, `await wait_cancelled()`.
+Composite workflow adapters may call `adopt_artifact(record)` for an artifact
+already registered by a nested Engine run.
 
 ### `NodeResult`
 
 `NodeResult.ok(**detail)` · `NodeResult.fail(msg, *, retryable=False, **detail)` ·
-`NodeResult.retry(msg, **detail)` · `NodeResult.needs_approval(msg, **detail)`.
+`NodeResult.retry(msg, **detail)` · `NodeResult.needs_approval(msg, **detail)` ·
+`NodeResult.skip(msg, **detail)`.
 
 ### Graph builders
 
@@ -258,8 +264,11 @@ from loomcraft.inputs import pending_requests, requests_using_upload
 from loomcraft import tool_specs, to_dialect, anthropic_tools, openai_tools, mcp_tools, ToolSpec, SYSTEM_PROMPT
 ```
 
-`tool_specs(*, include_workflows=True, include_inspection=True, max_search_results=10)`
+`tool_specs(*, include_workflows=True, include_inspection=True, include_extensions=False, max_search_results=10)`
 → `list[ToolSpec]`.
+
+`extended_tool_specs()` and `dynamic_tool_specs()` include `execute_plan`, host
+catalog/table/knowledge extensions, and the single-artifact compatibility action.
 
 `to_dialect(specs, dialect)` where dialect is `canonical | anthropic | openai |
 openai_responses | mcp`.
@@ -278,7 +287,7 @@ Constants: `loomcraft.tools.READ_ONLY_TOOLS`, `MUTATING_TOOLS`, `PLAN_SCHEMA`,
 from loomcraft import ToolBroker, BrokerLimits, ToolResponse
 ```
 
-### `ToolBroker(session, registry, *, engine=None, limits=None, on_event=None)`
+### `ToolBroker(session, registry, *, engine=None, limits=None, on_event=None, ...)`
 
 | Method | Purpose |
 | --- | --- |
@@ -287,6 +296,7 @@ from loomcraft import ToolBroker, BrokerLimits, ToolResponse
 | `awaiting_inputs` | Blocked on a file request |
 | `active_run` | `Run \| None` |
 | `await close()` | Cancel anything in flight |
+| `await cancel_run(run_id)` / `await approve_run(run_id, node_id, ...)` | Control a live run |
 | `fulfill_input_request(request_id)` | Confirm the user's uploads |
 | `cancel_input_request(request_id)` | Decline a request |
 | `invalidate_requests_for_upload(upload_id)` | Re-open affected requests |
@@ -335,9 +345,11 @@ from loomcraft.server import create_app, create_router, TurnManager, FASTAPI_AVA
 
 ```python
 create_app(store, registry, agent_factory, *, title="LoomCraft",
-           prefix="/api/v1/loomcraft", limits=None, cors_origins=None)
+           prefix="/api/v1/loomcraft", limits=None, cors_origins=None,
+           broker_options=None)
 
-create_router(store, registry, agent_factory, *, prefix=..., limits=None, manager=None)
+create_router(store, registry, agent_factory, *, prefix=..., limits=None,
+              manager=None, broker_options=None)
 ```
 
 `agent_factory(session) -> Agent` is called per turn, so model, effort, or prompt
@@ -375,6 +387,8 @@ All derive from `LoomCraftError` with `.code` and `.public_message`.
 | `RepeatedActionError` | `BROKER_ACTION_REPEATED` |
 | `AwaitingInputsError` | `BROKER_AWAITING_INPUTS` |
 | `ExecutionBusyError` | `BROKER_EXECUTION_BUSY` |
+| `InvalidArgumentError` | `BROKER_INVALID_ARGUMENT` |
+| `KnowledgeUnavailableError` | `BROKER_KNOWLEDGE_UNAVAILABLE` |
 | `UnsupportedActionError` | `BROKER_ACTION_UNSUPPORTED` |
 
 ---
@@ -393,6 +407,8 @@ All derive from `LoomCraftError` with `.code` and `.public_message`.
 | `run_capability` | `capability_id`, `step_id`, `inputs` | `parameters` |
 | `run_workflow` | `workflow_id`, `step_id`, `inputs` | `parameters` |
 | `register_artifacts` | `step_id`, `artifacts` | — |
+| `execute_plan` | — | `inputs`, `timeout_seconds` |
+| `operation_search`, `inspect_table`, `knowledge_*`, `register_artifact` | varies | Optional host extensions |
 
 Every response: `{ok, result?, error?, error_code?}`.
 
@@ -407,6 +423,8 @@ Every response: `{ok, result?, error?, error_code?}`.
 | `execution_started` | `{step_id, execution_kind, execution_id, capability, nodes}` |
 | `execution_progress` | `{execution_id, node_id, status, attempt?, max_attempts?, fraction?, message?, error?, retry_in_seconds?, duration_seconds?}` |
 | `execution_finished` | `{step_id, execution}` |
+| `step_attempt` / `step_retry` | Compatibility execution attempt/retry metadata |
+| `run_timeout` | `{run_id, timeout_seconds}` |
 | `node_log` | `{execution_id, node_id, level, message}` |
 | `artifact_registered` | `{artifact}` |
 | `input_required` | `{request}` |
@@ -416,12 +434,12 @@ Every response: `{ok, result?, error?, error_code?}`.
 | `approval_required` | `{execution_id, nodes}` |
 | `approval_resolved` | `{execution_id, node_id, approved}` |
 | `tool_call` * | `{item_id, tool, step_id?}` |
-| `tool_result` * | `{item_id, tool, ok, exit_code, error?, error_code?}` |
+| `tool_result` * | `{item_id, tool, ok, exit_code?, error?, error_code?}` |
 | `message` / `message_delta` * | `{item_id, text}` / `{item_id, delta}` |
 | `notice` / `error` | `{message}` |
 | `done` | `{ok}` |
 
-`*` stream-only — not persisted, not replayable, `seq: -1`.
+`*` may be persisted by a host or sent as transient `seq: -1` frames.
 
 ---
 
@@ -437,6 +455,8 @@ Default prefix `/api/v1/loomcraft`.
 | `GET` | `/sessions/{id}/history` | `?after_seq=` | Full state snapshot |
 | `DELETE` | `/sessions/{id}` | — | `{deleted}` |
 | `GET` | `/catalog` | — | `{capabilities, workflows}` |
+| `GET` | `/tools` | — | Extended tool schemas |
+| `POST` | `/sessions/{id}/tools/{name}` | JSON payload | Tool response |
 | `POST` | `/sessions/{id}/uploads` | multipart `file` | Upload record |
 | `DELETE` | `/sessions/{id}/uploads/{uid}` | — | `{deleted, invalidated_request_ids}` |
 | `POST` | `/sessions/{id}/turn` | `{message}` | `text/event-stream` |
@@ -445,6 +465,7 @@ Default prefix `/api/v1/loomcraft`.
 | `POST` | `/sessions/{id}/input-requests/{rid}/fulfill` | — | `{request_id, allocated}` |
 | `POST` | `/sessions/{id}/input-requests/{rid}/cancel` | — | `{request_id}` |
 | `POST` | `/sessions/{id}/executions/{rid}/approve` | `{node_id, approved}` | Confirmation |
+| `POST` | `/sessions/{id}/runs/{rid}/cancel` / `approve` | Compatibility aliases | Confirmation |
 | `GET` | `/sessions/{id}/artifacts` | — | `{artifacts}` |
 | `GET` | `/sessions/{id}/artifacts/{aid}` | — | File download |
 | `GET` | `/healthz` | — | `{ok, problems, capabilities, workflows}` |
@@ -538,3 +559,13 @@ Node fills are derived, not tokens: each status fill is `color-mix` of its
 status colour at 2.5–3.5% over `--lc-surface`. The border and the status dot
 carry the state; a saturated fill per status turns a twenty-node canvas into a
 patchwork and makes the titles harder to scan.
+
+## Optional and compatibility surface
+
+The package also exports the following optional APIs from the same canonical
+modules: `AIProvider`, `OpenAICompatibleProvider`, `ResponsesAPIProvider`,
+`JsonlSubprocessProvider`, `CodexCLIProvider`, `PlannerAgent`, `PlanExecutor`,
+`execute_plan`, `validate_dag`/`plan_from_dag`, `inspect_table_file`, and the
+knowledge-provider hooks. Legacy names such as `DAGExecutor`, `InMemoryStore`,
+and `LoomcraftWorkbench` are adapters; they share the canonical event and plan
+contracts and let existing integrations move to the typed API incrementally.

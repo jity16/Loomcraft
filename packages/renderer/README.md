@@ -31,6 +31,11 @@ import { LoomClient } from "@loomcraft/renderer";
 import { useLoomSession, PlanGraph, Timeline, ArtifactList } from "@loomcraft/renderer";
 ```
 
+For applications that already own a reducer, the compatibility surface
+also exports `LoomcraftWorkbench`, `TaskFlowPanel`, `reduceEvent`, `hydrateState`,
+`consumeSse`, `LoomcraftClient`, and `renderPlanSvg`. These names project onto
+the same state/layout implementation; they do not create a second renderer.
+
 `reduceLoomEvent` has the exact `(state, action) => state` shape `useReducer`
 wants, and `hydrateLoomState` replays a persisted history through the same
 function — so live updates and a mid-run refresh cannot disagree.

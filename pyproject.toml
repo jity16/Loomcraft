@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "loomcraft"
+version = "0.1.0"
+description = "An AI-native DAG planning and execution engine with provider-neutral tools and live rendering"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Loomcraft contributors"}]
+keywords = ["ai", "agent", "dag", "workflow", "orchestration", "react"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries",
+]
+dependencies = ["pydantic>=2.7,<3"]
+
+[project.optional-dependencies]
+server = ["fastapi>=0.110", "uvicorn[standard]>=0.29", "python-multipart>=0.0.9"]
+anthropic = ["anthropic>=0.40"]
+openai = ["openai>=1.30"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "mypy>=1.10"]
+all = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.29",
+  "python-multipart>=0.0.9",
+  "anthropic>=0.40",
+  "openai>=1.30",
+]
+
+[project.urls]
+Homepage = "https://github.com/jity16/Loomcraft"
+Repository = "https://github.com/jity16/Loomcraft"
+Documentation = "https://github.com/jity16/Loomcraft/tree/main/docs"
+
+[tool.setuptools]
+package-dir = {"" = "packages/core/src"}
+
+[tool.setuptools.packages.find]
+where = ["packages/core/src"]
+
+[tool.setuptools.package-data]
+loomcraft = ["py.typed", "*.json", "schemas/*.json", "schemas/README.md"]
+
+[tool.setuptools.data-files]
+"share/loomcraft/schema" = ["packages/core/schema/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "packages/core/tests"]
+pythonpath = ["packages/core/src"]

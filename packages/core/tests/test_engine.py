@@ -101,6 +101,41 @@ class TestParallelism(EngineCase):
 
 
 class TestRetry(EngineCase):
+    async def test_retry_multiplier_and_cap_are_applied(self):
+        events: list[tuple[str, dict]] = []
+
+        async def flaky(ctx: lc.NodeContext) -> lc.NodeResult:
+            return lc.NodeResult.retry("transient")
+
+        self.registry.register_runner("bounded-backoff", flaky)
+        engine = lc.Engine(
+            self.registry,
+            self.session,
+            emit=lambda name, data: events.append((name, dict(data))),
+        )
+        graph = ExecutionGraph(
+            id="bounded-backoff",
+            name="bounded backoff",
+            nodes=(
+                self.node(
+                    "node",
+                    "bounded-backoff",
+                    max_attempts=3,
+                    retry_backoff_seconds=0.001,
+                    retry_backoff_multiplier=3,
+                    retry_max_backoff_seconds=0.002,
+                ),
+            ),
+        )
+        run = await engine.execute(graph)
+        retry_delays = [
+            row["retry_in_seconds"]
+            for name, row in events
+            if name == "execution_progress" and row.get("status") == "retrying"
+        ]
+        self.assertEqual(run.status, "failed")
+        self.assertEqual(retry_delays, [0.001, 0.002])
+
     async def test_retries_until_success(self):
         calls = {"n": 0}
 
@@ -252,8 +287,107 @@ class TestSkipPropagation(EngineCase):
         self.assertNotIn("mid", ran)
         self.assertIn("island", ran)
 
+    async def test_upstream_artifact_is_reverified_before_downstream_use(self):
+        downstream_ran = False
+
+        async def produce(ctx: lc.NodeContext) -> lc.NodeResult:
+            ctx.emit("payload", "payload.txt", "trusted")
+            return lc.NodeResult.ok()
+
+        async def consume(ctx: lc.NodeContext) -> lc.NodeResult:
+            nonlocal downstream_ran
+            downstream_ran = True
+            return lc.NodeResult.ok(value=ctx.input("payload").read_text())
+
+        self.registry.register_runner("produce", produce)
+        self.registry.register_runner("consume", consume)
+        def tamper(name, data):
+            if name == "artifact_registered":
+                artifact_id = data["artifact"]["id"]
+                record = next(
+                    item
+                    for item in self.session.list_artifacts()
+                    if item["id"] == artifact_id
+                )
+                (self.session.root / record["relpath"]).write_text("tampered")
+
+        engine = lc.Engine(self.registry, self.session, emit=tamper)
+        graph = ExecutionGraph(
+            id="integrity",
+            name="integrity",
+            nodes=(
+                self.node("produce", "produce"),
+                self.node("consume", "consume", depends_on=("produce",)),
+            ),
+        )
+        run = await engine.execute(graph)
+        self.assertEqual(run.status, "failed")
+        self.assertFalse(downstream_ran)
+        self.assertIn("trusted metadata", run.nodes["consume"].error or "")
+
 
 class TestApproval(EngineCase):
+    async def test_require_approval_policy_pauses_after_final_failure(self):
+        async def fail(_: lc.NodeContext) -> lc.NodeResult:
+            return lc.NodeResult.fail("needs a decision")
+
+        self.registry.register_runner("approval-on-failure", fail)
+        graph = ExecutionGraph(
+            id="approval-on-failure",
+            name="approval on failure",
+            nodes=(
+                self.node(
+                    "failure",
+                    "approval-on-failure",
+                    on_failure="require_approval",
+                ),
+            ),
+        )
+        run = self.engine.submit(graph)
+        for _ in range(200):
+            await asyncio.sleep(0.005)
+            if run.status == "paused_approval":
+                break
+        self.assertEqual(run.pending_approvals, ["failure"])
+        self.assertEqual(run.nodes["failure"].error, "needs a decision")
+        self.assertTrue(run.approve("failure", True))
+        await run.wait()
+        self.assertEqual(run.status, "succeeded")
+
+    async def test_declared_approval_gate_runs_side_effect_only_after_approval(self):
+        calls: list[bool] = []
+
+        async def publish(ctx: lc.NodeContext) -> lc.NodeResult:
+            calls.append(bool(ctx.config.get("approved")))
+            ctx.emit("receipt", "receipt.json", "{}")
+            return lc.NodeResult.ok()
+
+        self.registry.register_runner("publish", publish)
+        graph = ExecutionGraph(
+            id="approval-before-run",
+            name="approval before run",
+            nodes=(
+                self.node(
+                    "publish",
+                    "publish",
+                    outputs=("receipt",),
+                    requires_approval=True,
+                ),
+            ),
+        )
+        run = self.engine.submit(graph)
+        for _ in range(200):
+            await asyncio.sleep(0.005)
+            if run.status == "paused_approval":
+                break
+        self.assertEqual(calls, [])
+        self.assertEqual(run.nodes["publish"].attempts, 0)
+        self.assertTrue(run.approve("publish", True))
+        await run.wait()
+        self.assertEqual(calls, [True])
+        self.assertEqual(run.status, "succeeded")
+        self.assertEqual(len(run.artifacts), 1)
+
     async def test_run_pauses_then_resumes_on_approval(self):
         async def gate(ctx: lc.NodeContext) -> lc.NodeResult:
             return lc.NodeResult.needs_approval("please confirm")
@@ -362,9 +496,81 @@ class TestCancellation(EngineCase):
 
 
 class TestArtifactsAndInputs(EngineCase):
+    async def test_non_serializable_runner_detail_fails_closed(self):
+        async def bad(_: lc.NodeContext) -> lc.NodeResult:
+            return lc.NodeResult.ok(path=Path("/private/secret"))
+
+        self.registry.register_runner("bad-detail", bad)
+        run = await self.engine.execute(
+            ExecutionGraph(
+                id="bad-detail",
+                name="bad detail",
+                nodes=(self.node("node", "bad-detail"),),
+            )
+        )
+        self.assertEqual(run.status, "failed")
+        self.assertIn("JSON-serializable", run.nodes["node"].error or "")
+
+    async def test_artifact_ports_and_filenames_are_confined(self):
+        async def bad_port(ctx: lc.NodeContext) -> lc.NodeResult:
+            ctx.emit("secret", "result.txt", "x")
+            return lc.NodeResult.ok()
+
+        async def bad_path(ctx: lc.NodeContext) -> lc.NodeResult:
+            ctx.emit("output", "../../escape.txt", "x")
+            return lc.NodeResult.ok()
+
+        self.registry.register_runner("bad-port", bad_port)
+        self.registry.register_runner("bad-path", bad_path)
+        for runner in ("bad-port", "bad-path"):
+            graph = ExecutionGraph(
+                id=runner,
+                name=runner,
+                nodes=(self.node("node", runner, outputs=("output",)),),
+            )
+            run = await self.engine.execute(graph)
+            self.assertEqual(run.status, "failed")
+        self.assertEqual(self.session.list_artifacts(), [])
+
+    async def test_failed_attempt_artifacts_are_not_promoted_or_forwarded(self):
+        async def flaky(ctx: lc.NodeContext) -> lc.NodeResult:
+            ctx.emit("table", f"attempt-{ctx.attempt}.csv", f"attempt\n{ctx.attempt}\n")
+            if ctx.attempt == 1:
+                return lc.NodeResult.retry("try again")
+            return lc.NodeResult.ok()
+
+        async def consume(ctx: lc.NodeContext) -> lc.NodeResult:
+            return lc.NodeResult.ok(filename=ctx.input("table").filename)
+
+        self.registry.register_runner("flaky-output", flaky)
+        self.registry.register_runner("consume-output", consume)
+        graph = ExecutionGraph(
+            id="retry-artifacts",
+            name="retry artifacts",
+            nodes=(
+                self.node(
+                    "flaky",
+                    "flaky-output",
+                    outputs=("table",),
+                    max_attempts=2,
+                    retry_backoff_seconds=0,
+                ),
+                self.node("consume", "consume-output", depends_on=("flaky",)),
+            ),
+        )
+        run = await self.engine.execute(graph)
+        self.assertEqual(run.status, "succeeded")
+        self.assertEqual(run.nodes["consume"].detail["filename"], "attempt-2.csv")
+        self.assertEqual(len(self.session.list_artifacts()), 1)
+
     async def test_artifacts_flow_from_upstream_to_downstream_by_port(self):
         async def produce(ctx: lc.NodeContext) -> lc.NodeResult:
-            ctx.emit("table", "out.csv", "id,value\n1,42\n")
+            ctx.emit(
+                "table",
+                "out.csv",
+                "id,value\n1,42\n",
+                content_type="text/custom-table",
+            )
             return lc.NodeResult.ok()
 
         async def consume(ctx: lc.NodeContext) -> lc.NodeResult:
@@ -385,6 +591,37 @@ class TestArtifactsAndInputs(EngineCase):
         self.assertEqual(run.status, "succeeded")
         self.assertEqual(run.nodes["consume"].detail["rows"], 2)
         self.assertEqual(len(run.artifacts), 1)
+        self.assertEqual(run.artifacts[0]["content_type"], "text/custom-table")
+
+    async def test_upstream_port_can_map_to_a_different_runner_input_key(self):
+        async def produce(ctx: lc.NodeContext) -> lc.NodeResult:
+            ctx.emit("table_output", "out.csv", "id\n1\n")
+            return lc.NodeResult.ok()
+
+        async def consume(ctx: lc.NodeContext) -> lc.NodeResult:
+            return lc.NodeResult.ok(filename=ctx.input("table").filename)
+
+        self.registry.register_runner("mapped-produce", produce)
+        self.registry.register_runner("mapped-consume", consume)
+        graph = ExecutionGraph(
+            id="mapped",
+            name="mapped",
+            nodes=(
+                self.node(
+                    "produce", "mapped-produce", outputs=("table_output",)
+                ),
+                self.node(
+                    "consume",
+                    "mapped-consume",
+                    depends_on=("produce",),
+                    input_ports={"table_output": "table"},
+                    input_extensions={"table": (".csv",)},
+                ),
+            ),
+        )
+        run = await self.engine.execute(graph)
+        self.assertEqual(run.status, "succeeded")
+        self.assertEqual(run.nodes["consume"].detail["filename"], "out.csv")
 
     async def test_uploads_resolve_through_source_refs(self):
         upload = self.session.save_upload("data.csv", b"a,b\n1,2\n")
@@ -417,6 +654,28 @@ class TestArtifactsAndInputs(EngineCase):
 
 
 class TestGraphGuards(EngineCase):
+    async def test_terminal_run_handles_are_retained_with_a_bound(self):
+        async def done(_: lc.NodeContext) -> lc.NodeResult:
+            return lc.NodeResult.ok()
+
+        self.registry.register_runner("retained", done)
+        engine = lc.Engine(
+            self.registry,
+            self.session,
+            max_retained_runs=2,
+            emit=lambda *_: None,
+        )
+        identifiers: list[str] = []
+        for index in range(3):
+            graph = ExecutionGraph(
+                id=f"g-{index}",
+                name="retained",
+                nodes=(self.node("node", "retained"),),
+            )
+            identifiers.append((await engine.execute(graph)).id)
+        self.assertIsNone(engine.get(identifiers[0]))
+        self.assertIsNotNone(engine.get(identifiers[-1]))
+
     async def test_unregistered_runner_is_rejected_at_submit(self):
         graph = ExecutionGraph(id="g", name="x", nodes=(self.node("n", "missing.runner"),))
         with self.assertRaises(lc.RegistryError):

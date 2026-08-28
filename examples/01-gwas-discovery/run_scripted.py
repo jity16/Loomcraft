@@ -493,11 +493,17 @@ async def main() -> int:
                 break
         show("run status", approval_run.status)
         show("waiting on", approval_run.pending_approvals)
-        show("side effect performed?", "no — the runner returned before acting")
+        show("side effect performed?", "no — the engine has not called the runner yet")
 
         approval_run.approve("execute", True)
         await approval_run.wait()
         show("after approval", approval_run.status)
+        show(
+            "side effect receipt",
+            "registered" if any(
+                item.get("port_name") == "receipt" for item in approval_run.artifacts
+            ) else "missing",
+        )
 
         # ── 15 ───────────────────────────────────────────────────────────────
         banner(15, "Failure and skip propagation")

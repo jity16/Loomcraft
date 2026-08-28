@@ -30,6 +30,51 @@ export class LoomProtocolError extends Error {
   }
 }
 
+/** Compatibility names used by the original intelligent-mode client. */
+export class IntelligentHttpError extends LoomHttpError {}
+export class IntelligentProtocolError extends LoomProtocolError {}
+export class IntelligentRequestTimeoutError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "IntelligentRequestTimeoutError";
+  }
+}
+
+export async function withIntelligentRequestTimeout<T>(
+  timeoutMs: number,
+  message: string,
+  action: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new RangeError("timeoutMs must be a positive finite number");
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = globalThis.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    return await action(controller.signal);
+  } catch (error) {
+    if (timedOut) {
+      throw new IntelligentRequestTimeoutError(message, { cause: error });
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
+export function createIntelligentClientToken(): string {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  globalThis.crypto?.getRandomValues?.(bytes);
+  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 /** How a turn stream ended. `detached` means the work continues server-side. */
 export type TurnOutcome =
   | { state: "terminal"; ok: boolean }

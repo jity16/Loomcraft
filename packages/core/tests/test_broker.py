@@ -206,6 +206,35 @@ class TestPlanTools(BrokerCase):
 
 
 class TestExecution(BrokerCase):
+    async def test_direct_continue_policy_leaves_downstream_runnable(self):
+        await self.publish(
+            [
+                {
+                    "id": "run",
+                    "title": "Boom",
+                    "kind": "capability",
+                    "capability": "text.boom",
+                    "on_failure": "continue",
+                },
+                {
+                    "id": "reply",
+                    "title": "Answer",
+                    "kind": "answer",
+                    "depends_on": ["run"],
+                },
+            ]
+        )
+        failed = await self.broker.dispatch(
+            "run_capability",
+            {"capability_id": "text.boom", "step_id": "run", "inputs": {}},
+        )
+        self.assertFalse(failed.ok)
+        self.assertEqual(lc.get_step(self.session.current_plan(), "reply")["status"], "pending")
+        completed = await self.broker.dispatch(
+            "update_step", {"step_id": "reply", "status": "succeeded"}
+        )
+        self.assertTrue(completed.ok)
+
     async def test_run_capability_end_to_end(self):
         await self.publish_echo_plan()
         response = await self.broker.dispatch(
@@ -274,6 +303,21 @@ class TestExecution(BrokerCase):
             "pending",
             "a rejected call must not leave the step stuck in running",
         )
+
+    async def test_input_extension_is_enforced_by_the_engine_contract(self):
+        await self.publish_echo_plan()
+        wrong = self.session.save_upload("input.csv", b"hello")
+        response = await self.broker.dispatch(
+            "run_capability",
+            {
+                "capability_id": "text.echo",
+                "step_id": "run",
+                "inputs": {"doc": wrong["source_ref"]},
+            },
+        )
+        self.assertFalse(response.ok)
+        self.assertEqual(response.error_code, "CAPABILITY_CONTRACT_VIOLATION")
+        self.assertEqual(lc.get_step(self.session.current_plan(), "run")["status"], "pending")
 
     async def test_failed_execution_marks_the_step_and_skips_downstream(self):
         await self.publish(
@@ -398,6 +442,40 @@ class TestInputGating(BrokerCase):
 
 
 class TestArtifactRegistration(BrokerCase):
+    async def test_rejects_registration_before_dependencies_complete(self):
+        await self.publish(
+            [
+                {"id": "prepare", "title": "Prepare", "kind": "dynamic"},
+                {
+                    "id": "report",
+                    "title": "Report",
+                    "kind": "dynamic",
+                    "depends_on": ["prepare"],
+                },
+            ]
+        )
+        (self.session.scratch_dir / "report.md").write_text("report")
+        response = await self.broker.dispatch(
+            "register_artifacts",
+            {"step_id": "report", "artifacts": [{"path": "report.md"}]},
+        )
+        self.assertFalse(response.ok)
+        self.assertEqual(response.error_code, "STEP_DEPENDENCIES_INCOMPLETE")
+        self.assertEqual(self.session.list_artifacts(), [])
+
+    async def test_rejects_registration_after_step_is_terminal(self):
+        await self.publish([{"id": "work", "title": "Work", "kind": "dynamic"}])
+        await self.broker.dispatch(
+            "update_step", {"step_id": "work", "status": "succeeded"}
+        )
+        (self.session.scratch_dir / "late.md").write_text("late")
+        response = await self.broker.dispatch(
+            "register_artifacts",
+            {"step_id": "work", "artifacts": [{"path": "late.md"}]},
+        )
+        self.assertFalse(response.ok)
+        self.assertEqual(self.session.list_artifacts(), [])
+
     async def test_registers_scratch_files(self):
         await self.publish([{"id": "work", "title": "Work", "kind": "dynamic"}])
         (self.session.scratch_dir / "report.md").write_text("# Findings\n")
@@ -444,6 +522,14 @@ class TestArtifactRegistration(BrokerCase):
 
 
 class TestGuardrails(BrokerCase):
+    async def test_extra_handler_cannot_override_a_core_tool(self):
+        with self.assertRaises(ValueError):
+            lc.ToolBroker(
+                self.session,
+                self.registry,
+                extra_tool_handlers={"publish_plan": lambda _: {}},
+            )
+
     async def test_per_turn_call_budget(self):
         broker = lc.ToolBroker(
             self.session, self.registry, limits=lc.BrokerLimits(max_actions_per_turn=3)
@@ -481,6 +567,20 @@ class TestGuardrails(BrokerCase):
         response = await self.broker.dispatch("delete_everything", {})
         self.assertFalse(response.ok)
         self.assertEqual(response.error_code, "BROKER_ACTION_UNSUPPORTED")
+
+    async def test_non_object_and_non_json_payloads_fail_closed(self):
+        non_object = await self.broker.dispatch("session_context", [])  # type: ignore[arg-type]
+        self.assertFalse(non_object.ok)
+        non_finite = await self.broker.dispatch("catalog_search", {"query": float("nan")})
+        self.assertFalse(non_finite.ok)
+        self.assertIn("JSON-serializable", non_finite.error or "")
+
+    async def test_tool_schema_is_enforced_server_side(self):
+        response = await self.broker.dispatch(
+            "session_context", {"unexpected": True}
+        )
+        self.assertFalse(response.ok)
+        self.assertEqual(response.error_code, "BROKER_INVALID_ARGUMENT")
 
     async def test_concurrent_executions_are_refused(self):
         registry = build_registry()

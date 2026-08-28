@@ -17,7 +17,9 @@ export * from "./types";
 export * from "./state";
 export * from "./layout";
 export * from "./client";
+export * from "./transport";
 export * from "./useLoomSession";
+export * from "./svg";
 export { PlanGraph, StepDetail } from "./components/PlanGraph";
 export type { PlanGraphProps, StepDetailProps } from "./components/PlanGraph";
 export {
@@ -32,3 +34,11 @@ export {
 } from "./components/panels";
 export { LoomWorkbench } from "./components/Workbench";
 export type { LoomWorkbenchProps } from "./components/Workbench";
+export {
+  LoomcraftWorkbench,
+  TaskFlowPanel,
+  InputRequestCard,
+  EventTimeline,
+  CompatArtifactList,
+} from "./compat";
+export type { LoomcraftWorkbenchProps, TaskFlowPanelProps } from "./compat";

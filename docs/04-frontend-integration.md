@@ -331,16 +331,16 @@ custom properties are not enough.
 
 ## Accessibility
 
-- The graph is `aria-hidden` and paired with a visually hidden ordered list
-  stating each step, its kind, status, and dependencies. A DAG whose only
-  representation is spatial is unusable with a screen reader.
+- Each graph node is a keyboard-focusable native `<button>` with an accessible
+  label containing its kind, status, and dependencies; decorative edges are
+  hidden from assistive technology.
 - The progress bar is a real `role="progressbar"` with correct value attributes.
 - Running indicators and animated edges respect `prefers-reduced-motion`.
 - Every control is a real `<button>` with an accessible name.
 - Errors use `role="alert"`.
 
-If you build custom node rendering, keep the hidden list — it is cheap and it is
-the difference between usable and not.
+If you build custom node rendering, keep an equivalent keyboard-accessible list
+or table of steps and dependencies.
 
 ---
 
@@ -430,6 +430,8 @@ Implementing against the HTTP API directly:
 | `GET` | `/catalog` | Registered capabilities and workflows |
 | `POST` | `/sessions/{id}/uploads` | Upload a file (multipart) |
 | `DELETE` | `/sessions/{id}/uploads/{uid}` | Delete a file; returns invalidated requests |
+| `GET` | `/tools` | Discover the extended tool schemas |
+| `POST` | `/sessions/{id}/tools/{name}` | Dispatch one tool call directly |
 | `POST` | `/sessions/{id}/turn` | Start a turn; responds `text/event-stream` |
 | `GET` | `/sessions/{id}/events?after_seq=` | Observe without starting a turn |
 | `POST` | `/sessions/{id}/cancel` | Stop the running turn |
@@ -449,7 +451,7 @@ data: {"seq":3,"event":"plan_published","data":{"plan":{...}},"ts":"2026-..."}
 ```
 
 Comment lines (`:` prefix) are keep-alives — ignore them. Every persisted event
-carries a `seq`; stream-only frames (`message_delta`, `tool_call`, `tool_result`)
-carry `seq: -1` and are not replayable, which is fine because they are cosmetic.
+carries a `seq`; transient `message_delta`, `tool_call`, and `tool_result` frames
+may use `seq: -1` when a host chooses not to persist them.
 
 Next: [Extending](05-extending.md).

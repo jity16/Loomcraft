@@ -2,7 +2,7 @@
  * Deterministic layered DAG layout — no dagre, no d3, no runtime dependencies.
  *
  * Three passes, the classic Sugiyama skeleton minus the parts a plan graph does
- * not need (plans are ≤24 nodes, so an exact-but-slow step would still be free):
+ * not need (plans are bounded, so deterministic sweeps remain cheap):
  *
  * 1. **Layering.** Longest-path assignment: a node sits one row below its
  *    deepest dependency. Nodes sharing a row have no path between them, so a row

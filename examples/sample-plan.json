@@ -1,0 +1,27 @@
+{
+  "goal": "Produce a validated summary from two source tables",
+  "revision": 1,
+  "summary": "The independent profiling branches converge on a report.",
+  "steps": [
+    {
+      "id": "profile-a",
+      "title": "Profile source A",
+      "kind": "dynamic",
+      "depends_on": [],
+      "retry": {"max_attempts": 2, "backoff_seconds": 0.5}
+    },
+    {
+      "id": "profile-b",
+      "title": "Profile source B",
+      "kind": "dynamic",
+      "depends_on": []
+    },
+    {
+      "id": "report",
+      "title": "Assemble summary",
+      "kind": "review",
+      "depends_on": ["profile-a", "profile-b"],
+      "on_failure": "require_approval"
+    }
+  ]
+}

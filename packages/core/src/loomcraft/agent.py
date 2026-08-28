@@ -178,7 +178,7 @@ class AnthropicAgent:
             except ImportError as exc:  # pragma: no cover - import guard
                 raise RuntimeError(
                     "AnthropicAgent needs the `anthropic` package: "
-                    'pip install "loomcraft[anthropic] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"'
+                    'pip install "loomcraft[anthropic] @ git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"'
                 ) from exc
             # Resolves ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an
             # `ant auth login` profile — no key needs to be passed explicitly.

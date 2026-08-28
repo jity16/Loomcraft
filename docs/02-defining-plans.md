@@ -21,15 +21,15 @@ replan. This is the reference for what the server will and will not accept.
 {
   "goal": "string, 1–2000 chars, required",
   "summary": "string, ≤2000 chars, optional",
-  "revision": 1,                      // integer 1–100, required, must increase
+  "revision": 1,                      // integer 1–1,000,000, required, must increase
   "reason": null,                     // required when replacing a plan
-  "steps": [                          // 1–24 steps
+  "steps": [                          // 1–256 steps (24 recommended for readability)
     {
       "id": "clean",                  // ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$
       "title": "Clean the table",     // 1–160 chars
       "kind": "capability",           // answer|capability|workflow|dynamic|review
-      "depends_on": [],               // ≤24 step ids, must all exist
-      "capability": "gwas.qc",      // required iff kind is capability|workflow
+      "depends_on": [],               // ≤256 step ids, must all exist
+      "capability": "gwas.qc",      // required for capability|workflow; optional for review-only capability
       "description": ""               // ≤1000 chars, optional
     }
   ]
@@ -65,7 +65,7 @@ raises `PlanValidationError` on the first violation.
 | No self-dependency | `{"id": "a", "depends_on": ["a"]}` |
 | No duplicate dependencies | `depends_on: ["a", "a"]` |
 | The graph is acyclic | `a → b → c → a` |
-| 1–24 steps | 25 steps |
+| 1–256 steps | 257 steps |
 | Ids match the id pattern | `"my step"`, `"../etc"` |
 
 Cycle detection uses an iterative colouring DFS, so a deep graph cannot exhaust
@@ -82,7 +82,9 @@ validate_plan({"goal": "g", "revision": 1, "steps": [
 ### Kind agreement
 
 - `capability` and `workflow` steps **must** declare a `capability`.
-- Every other kind **must not**.
+- `review` may declare a capability only when its runner is explicitly review-scoped
+  (`review.*`, a `review` tag, or `metadata.step_kinds`).
+- `answer` and `dynamic` **must not** declare a capability.
 
 ```python
 {"id": "a", "title": "A", "kind": "dynamic", "capability": "gwas.qc"}
@@ -137,11 +139,14 @@ resend it; a model told `steps[2].title: too long` fixes it.
 
 | From | May go to |
 | --- | --- |
-| `pending` | `pending`, `running`, `succeeded`, `failed`, `skipped` |
-| `running` | `running`, `succeeded`, `failed`, `skipped` |
+| `pending` | `pending`, `running`, `waiting_approval`, `succeeded`, `failed`, `skipped`, `cancelled` |
+| `ready` | `ready`, `running`, `skipped`, `cancelled` |
+| `running` | `running`, `waiting_approval`, `succeeded`, `failed`, `skipped`, `cancelled` |
+| `waiting_approval` | `waiting_approval`, `running`, `succeeded`, `failed`, `cancelled` |
 | `succeeded` | `succeeded` — **terminal** |
 | `failed` | `failed`, `running` — retry without a replan |
 | `skipped` | `skipped`, `running` — revive |
+| `cancelled` | `cancelled`, `running` — resume after an explicit retry |
 
 Two deliberate choices:
 
@@ -167,8 +172,9 @@ the engine or the renderer would refuse to load.
 ## Dependency gating
 
 A step may not start until **all** of its dependencies are `succeeded`. Not
-"terminal" — succeeded. A dependency that failed or was skipped blocks its
-dependents permanently (they get skipped instead).
+"terminal" — succeeded. If a failed or skipped dependency declares
+`on_failure: "continue"`, its direct dependents may still run; otherwise they
+are skipped.
 
 ```python
 ensure_dependencies_succeeded(plan, "report")
@@ -193,7 +199,7 @@ Query the frontier from either side:
 ```python
 parsed = parse_plan(plan)
 parsed.ready_steps()     # startable right now
-parsed.blocked_steps()   # pending, but an upstream failed or was skipped
+parsed.blocked_steps()   # pending, but a stop-policy upstream failed/skipped
 parsed.layers            # [['clean'], ['profile', 'outliers'], ['report']]
 parsed.progress          # {'pending': 2, 'succeeded': 1, ..., 'total': 5}
 parsed.is_complete       # every step terminal
@@ -203,8 +209,8 @@ parsed.is_complete       # every step terminal
 
 ## Skip propagation
 
-When a step fails, everything downstream is marked `skipped` — transitively, to a
-fixed point:
+When a step fails with the default `on_failure: "stop"`, everything downstream
+is marked `skipped` — transitively, to a fixed point:
 
 ```python
 state = update_step(plan, "clean", "failed")
@@ -223,8 +229,10 @@ Sibling branches are unaffected:
           report (skipped)  ◄────────────┘
 ```
 
-`ToolBroker` calls this automatically after any failure, so the plan reflects
-reality without the agent having to walk the graph.
+`ToolBroker` calls this automatically after a stop-policy failure, so the plan
+reflects reality without the agent having to walk the graph; continue-policy
+branches remain pending and may be started once their other dependencies are
+ready.
 
 ---
 
@@ -234,7 +242,7 @@ reality without the agent having to walk the graph.
 
 1. `revision` must be **strictly greater** than the current one.
 2. A revision replacing an existing plan must carry a non-empty `reason`.
-3. You cannot replace a plan while any step is `running`.
+3. You cannot replace a plan while any step is `running` or `waiting_approval`.
 4. Old revisions are retained in `session.plan_history()`.
 
 ```python
@@ -347,7 +355,8 @@ can read.
 and `step2` — the ids appear in tool calls, events, node badges, and error
 messages.
 
-**Bound the plan.** 24 steps is the ceiling, but a plan approaching it usually
+**Bound the plan.** 256 steps is the hard ceiling (24 is the recommended
+readable default), but a plan approaching it usually
 wants a workflow for the fixed parts.
 
 ---

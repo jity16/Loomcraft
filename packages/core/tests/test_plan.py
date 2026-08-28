@@ -224,6 +224,27 @@ class TestDependencyGating(unittest.TestCase):
 
 
 class TestSkipPropagation(unittest.TestCase):
+    def test_continue_policy_keeps_downstream_startable(self):
+        steps = [
+            {
+                "id": "load",
+                "title": "Load",
+                "kind": "dynamic",
+                "on_failure": "continue",
+            },
+            {
+                "id": "report",
+                "title": "Report",
+                "kind": "answer",
+                "depends_on": ["load"],
+            },
+        ]
+        state = lc.update_step(lc.validate_plan(plan(steps)), "load", "failed")
+        state = lc.propagate_skips(state)
+        self.assertEqual(lc.get_step(state, "report")["status"], "pending")
+        lc.plan.ensure_dependencies_succeeded(state, "report")
+        self.assertEqual([item.id for item in lc.parse_plan(state).ready_steps()], ["report"])
+
     def test_failure_closes_out_the_whole_downstream_subtree(self):
         state = lc.validate_plan(plan(DIAMOND))
         state = lc.update_step(state, "load", "failed")

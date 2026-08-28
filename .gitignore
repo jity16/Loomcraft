@@ -1,29 +1,20 @@
-# Python
+.DS_Store
 __pycache__/
 *.py[cod]
-*.egg-info/
-build/
-dist/
-.venv/
-venv/
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-
-# Node
+.venv/
+dist/
+build/
 node_modules/
-packages/renderer/dist/
-*.tsbuildinfo
-npm-debug.log*
+*.egg-info/
+.tsbuildinfo
+.coverage
+.mypy_cache/
 
-# LoomCraft runtime data (sessions, event logs, artifacts)
-.loomcraft-data/
-**/sessions/
-
-# Editors / OS
-.DS_Store
-.idea/
-.vscode/
-*.swp
+# Internal working notes and diagram-generation sources are intentionally kept
+# local. Public, user-facing guides live under docs/ and remain tracked.
+docs/_internal/
+docs/extraction-notes.md
+docs/integration-comparison.md
+docs/migration.md
+assets/build_diagrams.py

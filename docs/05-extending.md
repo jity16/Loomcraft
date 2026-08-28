@@ -50,6 +50,7 @@ async def summarise(ctx: NodeContext) -> NodeResult:
 | `ctx.optional_input(key)` / `ctx.has_input(key)` | Optional inputs |
 | `ctx.parameters` | Validated parameters with defaults applied |
 | `ctx.config` | Fixed, non-model-writable runner configuration |
+| `ctx.dependencies` | Structured output detail from completed upstream nodes |
 | `ctx.workdir` | Private per-attempt scratch directory |
 | `ctx.attempt` | 1 on the first try, 2 on the first retry, … |
 | `ctx.log(msg, level)` | Streamed when the engine has `stream_logs=True` |
@@ -68,6 +69,7 @@ NodeResult.ok(rows=120)                    # succeeded
 NodeResult.fail("no header row")           # permanent — do NOT retry
 NodeResult.retry("upstream returned 503")  # transient — retry if budget remains
 NodeResult.needs_approval("about to send") # park for a human
+NodeResult.skip("not applicable")          # intentionally skip this node
 ```
 
 Getting `fail` vs `retry` right matters more than it looks. A malformed input is
@@ -228,6 +230,13 @@ registry.register_workflow(Workflow(
 
 A node receives its dependencies' artifacts keyed by the emitting **port name**,
 so `brief` reads `ctx.input("summary")` without knowing which node produced it.
+
+For hosts that want one call instead of agent-managed step calls, expose the
+`execute_plan` extension tool. It converts the published Plan into the same
+`ExecutionGraph`/`Engine` driver, so independent Plan steps run concurrently and
+the same retry, timeout, approval, artifact, and event rules apply. Bind explicit
+inputs by step id (`{"step": {"inputs": {...}, "parameters": {...}}}`); outputs
+from upstream steps are then available by port and in `ctx.dependencies`.
 Name ports after what they contain, not after the node.
 
 ---
@@ -339,7 +348,8 @@ For work that outlives a turn, have the runner poll an external job and return
 
 ## Human-in-the-loop
 
-Declare `requires_approval=True` and return early **before the side effect**:
+Declare `requires_approval=True`; the Engine pauses **before invoking the
+runner**, then supplies `ctx.config["approved"] = True` after approval:
 
 ```python
 PUBLISH = Capability(id="report.publish", ..., requires_approval=True)

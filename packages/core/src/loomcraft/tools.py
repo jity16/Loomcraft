@@ -33,16 +33,54 @@ REQUEST_INPUTS = "request_inputs"
 RUN_CAPABILITY = "run_capability"
 RUN_WORKFLOW = "run_workflow"
 REGISTER_ARTIFACTS = "register_artifacts"
+EXECUTE_PLAN = "execute_plan"
+OPERATION_SEARCH = "operation_search"
+INSPECT_TABLE = "inspect_table"
+KNOWLEDGE_LIST = "knowledge_list"
+KNOWLEDGE_SEARCH = "knowledge_search"
+KNOWLEDGE_READ = "knowledge_read"
+REGISTER_ARTIFACT = "register_artifact"
+
+EXTENDED_TOOLS: frozenset[str] = frozenset(
+    {
+        EXECUTE_PLAN,
+        OPERATION_SEARCH,
+        INSPECT_TABLE,
+        KNOWLEDGE_LIST,
+        KNOWLEDGE_SEARCH,
+        KNOWLEDGE_READ,
+        REGISTER_ARTIFACT,
+    }
+)
 
 #: Read-only tools. The broker keeps these available even while a turn is
 #: blocked waiting for user files, because gathering evidence is always safe.
 READ_ONLY_TOOLS: frozenset[str] = frozenset(
-    {SESSION_CONTEXT, CAPABILITY_SEARCH, CATALOG_SEARCH, INSPECT_SOURCE}
+    {
+        SESSION_CONTEXT,
+        CAPABILITY_SEARCH,
+        CATALOG_SEARCH,
+        INSPECT_SOURCE,
+        OPERATION_SEARCH,
+        INSPECT_TABLE,
+        KNOWLEDGE_LIST,
+        KNOWLEDGE_SEARCH,
+        KNOWLEDGE_READ,
+    }
 )
 
 #: Tools that change durable state or start work.
 MUTATING_TOOLS: frozenset[str] = frozenset(
-    {PUBLISH_PLAN, UPDATE_STEP, REQUEST_INPUTS, RUN_CAPABILITY, RUN_WORKFLOW, REGISTER_ARTIFACTS}
+    {
+        PUBLISH_PLAN,
+        UPDATE_STEP,
+        REQUEST_INPUTS,
+        RUN_CAPABILITY,
+        RUN_WORKFLOW,
+        REGISTER_ARTIFACTS,
+        REGISTER_ARTIFACT,
+        EXECUTE_PLAN,
+    }
 )
 
 
@@ -107,7 +145,8 @@ PLAN_STEP_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": (
         "One DAG step. Use title/kind (not label/type). `capability` is required "
-        "only for capability and workflow steps and forbidden otherwise."
+        "for capability/workflow steps, optional for a review-only capability "
+        "on review steps, and forbidden for dynamic/answer steps."
     ),
     "properties": {
         "id": _STEP_ID,
@@ -130,8 +169,108 @@ PLAN_STEP_SCHEMA: dict[str, Any] = {
         },
         "capability": {"type": ["string", "null"], "maxLength": 160},
         "description": {"type": "string", "maxLength": 1000},
+        # These fields are accepted for wire compatibility with the extracted
+        # runtime. Publication still strips server-owned state before storage.
+        "status": {
+            "type": "string",
+            "enum": [
+                "pending",
+                "ready",
+                "running",
+                "waiting_approval",
+                "succeeded",
+                "failed",
+                "skipped",
+                "cancelled",
+            ],
+        },
+        "summary": {"type": ["string", "null"], "maxLength": 2000},
+        "execution": {"type": ["object", "null"]},
+        "retry": {
+            "type": "object",
+            "properties": {
+                "max_attempts": {"type": "integer", "minimum": 0, "maximum": 20},
+                "backoff_seconds": {"type": "number", "minimum": 0, "maximum": 3600},
+                "backoff_multiplier": {"type": "number", "minimum": 1, "maximum": 10},
+                "max_backoff_seconds": {"type": "number", "minimum": 0, "maximum": 86400},
+            },
+            "additionalProperties": False,
+        },
+        "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+        "on_failure": {
+            "type": "string",
+            "enum": ["stop", "continue", "require_approval"],
+        },
+        "metadata": {"type": "object"},
+        "attempts": {"type": "integer", "minimum": 0, "maximum": 1000},
     },
     "required": ["id", "title", "kind"],
+    "additionalProperties": False,
+}
+
+ANALYSIS_OBJECTIVE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "id": _STEP_ID,
+        "question": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "status": {
+            "type": ["string", "null"],
+            "enum": [
+                "planned",
+                "executed",
+                "not_estimable",
+                "blocked",
+                "deferred_by_scope",
+                None,
+            ],
+        },
+        "estimand": {"type": "string", "maxLength": 500},
+        "independent_unit": {"type": "string", "maxLength": 300},
+        "expected_outputs": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {"type": "string", "maxLength": 300},
+        },
+        "method_families": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {"type": "string", "maxLength": 300},
+        },
+        "validation_requirements": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {"type": "string", "maxLength": 300},
+        },
+    },
+    "required": ["id", "question"],
+    "additionalProperties": False,
+}
+
+ANALYSIS_COVERAGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "objective_id": _STEP_ID,
+        "status": {
+            "type": "string",
+            "enum": [
+                "planned",
+                "executed",
+                "not_estimable",
+                "blocked",
+                "deferred_by_scope",
+            ],
+        },
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "selected_method": {"type": ["string", "null"], "maxLength": 300},
+        "step_ids": {"type": "array", "maxItems": 12, "items": _STEP_ID},
+        "artifact_refs": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {"type": "string", "minLength": 1, "maxLength": 300},
+        },
+        "next_action": {"type": ["string", "null"], "maxLength": 500},
+    },
+    "required": ["objective_id", "status", "reason"],
     "additionalProperties": False,
 }
 
@@ -150,6 +289,18 @@ PLAN_SCHEMA: dict[str, Any] = {
             "maxLength": 2000,
             "description": "Why this revision replaces the previous one. Required when revising.",
         },
+        "analysis_profile": {"type": ["string", "null"], "maxLength": 500},
+        "objectives": {
+            "type": "array",
+            "maxItems": 64,
+            "items": ANALYSIS_OBJECTIVE_SCHEMA,
+        },
+        "analysis_coverage": {
+            "type": "array",
+            "maxItems": 64,
+            "items": ANALYSIS_COVERAGE_SCHEMA,
+        },
+        "metadata": {"type": "object"},
         "steps": {
             "type": "array",
             "minItems": 1,
@@ -241,6 +392,7 @@ def tool_specs(
     *,
     include_workflows: bool = True,
     include_inspection: bool = True,
+    include_extensions: bool = False,
     max_search_results: int = 10,
 ) -> list[ToolSpec]:
     """Return the canonical tool surface.
@@ -270,13 +422,21 @@ def tool_specs(
         ),
         _tool(
             CATALOG_SEARCH,
-            "Search the whole pinned catalog (capabilities and workflows) and "
-            "return compact facts.",
+            "Search the pinned capability/workflow catalog and optional host "
+            "operation, tool, skill, or runner metadata.",
             {
                 "query": _NONEMPTY,
                 "scope": {
                     "type": "string",
-                    "enum": ["all", "capabilities", "workflows"],
+                    "enum": [
+                        "all",
+                        "capabilities",
+                        "workflows",
+                        "operations",
+                        "tools",
+                        "skills",
+                        "runners",
+                    ],
                 },
                 "limit": {"type": "integer", "minimum": 1, "maximum": max_search_results},
             },
@@ -341,7 +501,7 @@ def tool_specs(
             _tool(
                 RUN_CAPABILITY,
                 "Run one registered capability, authorized by a matching "
-                "capability step in the current plan. Inputs map capability input "
+                "capability step or bound review step in the current plan. Inputs map capability input "
                 "keys to source refs (upload:/artifact:/scratch:).",
                 {
                     "capability_id": _NONEMPTY,
@@ -388,7 +548,91 @@ def tool_specs(
             ["step_id", "artifacts"],
         )
     )
+    if include_extensions:
+        specs.extend(
+            [
+                _tool(
+                    EXECUTE_PLAN,
+                    "Execute all runnable steps in the current published plan with dependency-aware parallelism.",
+                    {
+                        "inputs": _OBJECT,
+                        "timeout_seconds": {"type": ["number", "null"], "minimum": 0.001},
+                    },
+                ),
+                _tool(
+                    OPERATION_SEARCH,
+                    "Search host-provided operation metadata without authorizing execution.",
+                    {
+                        "query": _NONEMPTY,
+                        "limit": {"type": "integer", "minimum": 1, "maximum": max_search_results},
+                    },
+                    ["query"],
+                ),
+                _tool(
+                    INSPECT_TABLE,
+                    "Read a bounded table preview through the host inspector.",
+                    {
+                        "source_ref": _NONEMPTY,
+                        "format": {"type": "string"},
+                        "max_rows": {"type": "integer", "minimum": 1, "maximum": 1000},
+                        "table": {"type": ["string", "null"]},
+                    },
+                    ["source_ref"],
+                ),
+                _tool(
+                    KNOWLEDGE_LIST,
+                    "List a bounded path from an injected knowledge provider.",
+                    {
+                        "scope": {"type": "string"},
+                        "path": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    },
+                ),
+                _tool(
+                    KNOWLEDGE_SEARCH,
+                    "Search an injected knowledge provider.",
+                    {
+                        "query": _NONEMPTY,
+                        "scope": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    },
+                    ["query"],
+                ),
+                _tool(
+                    KNOWLEDGE_READ,
+                    "Read a bounded logical resource from an injected knowledge provider.",
+                    {
+                        "path": _NONEMPTY,
+                        "scope": {"type": "string"},
+                        "offset": {"type": "integer", "minimum": 0},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 49152},
+                    },
+                    ["path"],
+                ),
+                _tool(
+                    REGISTER_ARTIFACT,
+                    "Register one scratch artifact (compatibility shorthand for register_artifacts).",
+                    {
+                        "step_id": _STEP_ID,
+                        "path": _NONEMPTY,
+                        "display_name": {"type": ["string", "null"]},
+                    },
+                    ["step_id", "path"],
+                ),
+            ]
+        )
     return specs
+
+
+def extended_tool_specs(**kwargs: Any) -> list[ToolSpec]:
+    """Return the canonical tools plus optional host extension actions."""
+    kwargs["include_extensions"] = True
+    return tool_specs(**kwargs)
+
+
+def dynamic_tool_specs(**kwargs: Any) -> list[dict[str, Any]]:
+    """Compatibility mapping for the extracted runtime's tool endpoint."""
+    return to_dialect(extended_tool_specs(**kwargs), "openai_responses")
 
 
 def to_dialect(specs: Sequence[ToolSpec], dialect: Dialect = "canonical") -> list[dict[str, Any]]:
@@ -436,6 +680,8 @@ Work in this order:
    parallel, so do not serialise work that need not be sequential.
 4. Execute. Run `run_capability` / `run_workflow` for those steps; do the
    `dynamic` and `review` steps yourself and report them with `update_step`.
+   When the host exposes it, `execute_plan` can schedule the whole published
+   graph in one audited run.
    Read the artifacts a step produced before you claim it succeeded.
 5. Replan on failure. If a step fails, publish a higher `revision` with a `reason`
    explaining what you learned and what you will do differently. Do not retry the
@@ -452,10 +698,13 @@ Rules the server enforces, so do not fight them:
   carry a `reason`.
 - Every file path you supply must be a source ref: `upload:<id>`,
   `artifact:<id>`, or `scratch:<relative-path>`.
+- Optional knowledge/table tools are read-only and never grant execution access.
 """
 
 
 __all__ = [
+    "ANALYSIS_COVERAGE_SCHEMA",
+    "ANALYSIS_OBJECTIVE_SCHEMA",
     "ARTIFACT_ITEM_SCHEMA",
     "CAPABILITY_SEARCH",
     "CATALOG_SEARCH",
@@ -463,12 +712,16 @@ __all__ = [
     "FILE_REQUIREMENT_SCHEMA",
     "INPUT_REQUEST_SCHEMA",
     "INSPECT_SOURCE",
+    "INSPECT_TABLE",
+    "EXECUTE_PLAN",
+    "EXTENDED_TOOLS",
     "MUTATING_TOOLS",
     "PLAN_SCHEMA",
     "PLAN_STEP_SCHEMA",
     "PUBLISH_PLAN",
     "READ_ONLY_TOOLS",
     "REGISTER_ARTIFACTS",
+    "REGISTER_ARTIFACT",
     "REQUEST_INPUTS",
     "RUN_CAPABILITY",
     "RUN_WORKFLOW",
@@ -481,4 +734,10 @@ __all__ = [
     "openai_tools",
     "to_dialect",
     "tool_specs",
+    "extended_tool_specs",
+    "dynamic_tool_specs",
+    "KNOWLEDGE_LIST",
+    "KNOWLEDGE_SEARCH",
+    "KNOWLEDGE_READ",
+    "OPERATION_SEARCH",
 ]

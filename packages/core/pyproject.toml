@@ -44,6 +44,7 @@ all = [
   "uvicorn[standard]>=0.29",
   "python-multipart>=0.0.9",
   "anthropic>=0.40",
+  "openai>=1.30",
 ]
 
 [project.urls]
@@ -55,9 +56,12 @@ Issues = "https://github.com/jity16/Loomcraft/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/loomcraft"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"schema" = "loomcraft/schemas"
+"../../LICENSE" = "LICENSE"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100

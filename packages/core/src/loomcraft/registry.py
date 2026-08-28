@@ -17,10 +17,14 @@ want available as a single unit, still executed by the same engine.
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import json
+import math
 import re
 from copy import deepcopy
-from typing import Any, Literal
+from dataclasses import dataclass, field
+from typing import Any, Callable, Literal, Mapping, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -39,6 +43,190 @@ ParameterType = Literal["integer", "number", "boolean", "string", "object", "arr
 ID_PATTERN = r"^[a-z][a-z0-9_.-]{1,159}$"
 KEY_PATTERN = r"^[a-z][a-z0-9_]{0,63}$"
 PORT_PATTERN = r"^[A-Za-z][A-Za-z0-9_]{0,63}$"
+
+
+# ── Extracted-runtime compatibility contracts ──────────────────────────────
+
+
+@dataclass
+class StepResult:
+    """Mapping-friendly result accepted by both execution adapters."""
+
+    output: Any = None
+    summary: str | None = None
+    artifacts: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    status: str = "succeeded"
+    error: str | None = None
+    retryable: bool = False
+
+    @classmethod
+    def from_value(cls, value: Any) -> "StepResult":
+        if isinstance(value, cls):
+            return value
+        if value is None:
+            return cls()
+        if isinstance(value, Mapping):
+            control_keys = {"output", "summary", "artifacts", "metadata", "status", "error", "retryable"}
+            is_control = bool(control_keys.intersection(value)) or value.get("status") in {
+                "succeeded",
+                "failed",
+                "skipped",
+            }
+            if is_control:
+                artifacts = value.get("artifacts") or []
+                metadata = value.get("metadata") or {}
+                if not isinstance(artifacts, list) or not all(isinstance(item, Mapping) for item in artifacts):
+                    raise ValueError("step result artifacts must be a list of objects")
+                if not isinstance(metadata, Mapping):
+                    raise ValueError("step result metadata must be an object")
+                status = str(value.get("status", "succeeded"))
+                if status not in {
+                    "succeeded",
+                    "failed",
+                    "skipped",
+                    "waiting_approval",
+                }:
+                    raise ValueError("step result status is invalid")
+                output = value.get("output")
+                if "output" not in value:
+                    output = {key: item for key, item in value.items() if key not in control_keys}
+                return cls(
+                    output=output,
+                    summary=str(value["summary"]) if value.get("summary") is not None else None,
+                    artifacts=[dict(item) for item in artifacts],
+                    metadata=dict(metadata),
+                    status=status,
+                    error=str(value["error"])[:2000] if value.get("error") is not None else None,
+                    retryable=bool(value.get("retryable", False)),
+                )
+        return cls(output=value)
+
+    @staticmethod
+    def ok(output: Any = None, **metadata: Any) -> "StepResult":
+        return StepResult(output=output, metadata=metadata)
+
+    @staticmethod
+    def fail(message: str, *, retryable: bool = False, **metadata: Any) -> "StepResult":
+        return StepResult(status="failed", error=str(message)[:2000], retryable=retryable, metadata=metadata)
+
+    @staticmethod
+    def retry(message: str, **metadata: Any) -> "StepResult":
+        return StepResult.fail(message, retryable=True, **metadata)
+
+
+@dataclass
+class CapabilitySpec:
+    """Legacy JSON-Schema capability adapted to the typed registry."""
+
+    id: str
+    name: str
+    description: str = ""
+    handler: Callable[[Any], Any] | None = None
+    version: str = "1.0.0"
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    parameter_schema: dict[str, Any] = field(default_factory=dict)
+    outputs: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    runner: str | None = None
+
+    def to_catalog(self) -> dict[str, Any]:
+        reserved = {
+            "type",
+            "id",
+            "name",
+            "version",
+            "execution_tool",
+            "inputs",
+            "parameters",
+            "outputs",
+        }
+        return {
+            "type": "capability",
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "version": self.version,
+            "execution_tool": "run_capability",
+            "inputs": deepcopy(self.input_schema),
+            "parameters": deepcopy(self.parameter_schema),
+            "outputs": deepcopy(self.outputs),
+            **{
+                key: deepcopy(value)
+                for key, value in self.metadata.items()
+                if key not in {"path", "command", "argv"} | reserved
+            },
+        }
+
+    def validate_inputs(self, value: Any) -> dict[str, Any]:
+        from .schema import validate as validate_schema
+
+        if value is None:
+            value = {}
+        if not isinstance(value, Mapping):
+            raise ContractError("capability inputs must be an object")
+        validate_schema(value, self.input_schema, "inputs")
+        return dict(value)
+
+    def validate_parameters(self, value: Any) -> dict[str, Any]:
+        from .schema import validate as validate_schema
+
+        if value is None:
+            value = {}
+        if not isinstance(value, Mapping):
+            raise ContractError("capability parameters must be an object")
+        validate_schema(value, self.parameter_schema, "parameters")
+        return dict(value)
+
+
+@dataclass
+class WorkflowSpec:
+    """Legacy single-handler workflow contract."""
+
+    id: str
+    name: str
+    description: str = ""
+    handler: Callable[[Any], Any] | None = None
+    version: str = "1.0.0"
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    outputs: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_catalog(self) -> dict[str, Any]:
+        reserved = {
+            "type",
+            "id",
+            "name",
+            "version",
+            "execution_tool",
+            "inputs",
+            "outputs",
+        }
+        return {
+            "type": "workflow",
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "version": self.version,
+            "execution_tool": "run_workflow",
+            "inputs": deepcopy(self.input_schema),
+            "outputs": deepcopy(self.outputs),
+            **{
+                key: deepcopy(value)
+                for key, value in self.metadata.items()
+                if key not in {"path", "command", "argv"} | reserved
+            },
+        }
+
+    def validate_inputs(self, value: Any) -> dict[str, Any]:
+        from .schema import validate as validate_schema
+
+        if value is None:
+            value = {}
+        if not isinstance(value, Mapping):
+            raise ContractError("workflow inputs must be an object")
+        validate_schema(value, self.input_schema, "inputs")
+        return dict(value)
 
 
 # ── Contract pieces ─────────────────────────────────────────────────────────
@@ -90,6 +278,8 @@ class Parameter(BaseModel):
         elif self.type == "number":
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 raise ContractError(f"parameter {name!r} must be numeric")
+            if not math.isfinite(float(value)):
+                raise ContractError(f"parameter {name!r} must be finite")
         elif self.type == "string":
             if not isinstance(value, str) or not value.strip():
                 raise ContractError(f"parameter {name!r} must be a non-empty string")
@@ -136,8 +326,15 @@ class CapabilityInput(BaseModel):
     def _valid_extensions(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         normalized = tuple(dict.fromkeys(value.strip().lower() for value in values))
         for value in normalized:
-            if not value.startswith(".") or len(value) < 2:
-                raise ValueError(f"input extension {value!r} must start with a dot")
+            if (
+                not value.startswith(".")
+                or not 2 <= len(value) <= 32
+                or any(
+                    not (character.isalnum() or character in {".", "_", "-", "+"})
+                    for character in value[1:]
+                )
+            ):
+                raise ValueError("input extension is invalid")
         return normalized
 
     @property
@@ -184,7 +381,7 @@ class Capability(BaseModel):
     timeout_seconds: float | None = Field(default=None, gt=0)
     max_attempts: int = Field(default=1, ge=1, le=10)
     retry_backoff_seconds: float = Field(default=1.0, ge=0)
-    #: Require a human decision before this capability's result counts.
+    #: Require a human decision before the runner is invoked.
     requires_approval: bool = False
 
     @model_validator(mode="after")
@@ -307,6 +504,9 @@ class Capability(BaseModel):
                 key: value.json_schema() for key, value in self.parameters.items()
             },
             "outputs": [item.model_dump(mode="json") for item in self.outputs],
+            "timeout_seconds": self.timeout_seconds,
+            "max_attempts": self.max_attempts,
+            "retry_backoff_seconds": self.retry_backoff_seconds,
             "requires_approval": self.requires_approval,
             "execution_tool": "run_capability",
         }
@@ -439,6 +639,15 @@ class Registry:
         self._capabilities: dict[str, Capability] = {}
         self._workflows: dict[str, Workflow] = {}
         self._runners: dict[str, RunnerFn] = {}
+        self._legacy_capabilities: dict[str, CapabilitySpec] = {}
+        self._legacy_workflows: dict[str, WorkflowSpec] = {}
+        self._handlers: dict[str, Callable[[Any], Any]] = {}
+        self._catalog_entries: dict[str, list[dict[str, Any]]] = {
+            "operations": [],
+            "tools": [],
+            "skills": [],
+            "runners": [],
+        }
 
     # ── Registration ────────────────────────────────────────────────────────
 
@@ -459,36 +668,132 @@ class Registry:
         return bool(key) and key in self._runners
 
     def register_capability(
-        self, capability: Capability, *, replace: bool = False
-    ) -> Capability:
-        if capability.id in self._capabilities and not replace:
+        self,
+        capability: Capability | CapabilitySpec | None = None,
+        *,
+        id: str | None = None,
+        name: str | None = None,
+        description: str = "",
+        handler: Callable[[Any], Any] | None = None,
+        version: str = "1.0.0",
+        input_schema: Mapping[str, Any] | None = None,
+        parameter_schema: Mapping[str, Any] | None = None,
+        outputs: Sequence[Mapping[str, Any]] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        runner: str | None = None,
+        replace: bool = False,
+    ) -> Capability | CapabilitySpec:
+        """Register typed contracts or the extracted JSON-Schema shorthand.
+
+        The typed :class:`Capability` path remains the canonical API.  The
+        keyword form is intentionally retained as a compatibility adapter so
+        applications can migrate incrementally without a second broker.
+        """
+        if capability is None:
+            legacy = CapabilitySpec(
+                id=id or "",
+                name=name or id or "",
+                description=description,
+                handler=handler,
+                version=version,
+                input_schema=deepcopy(dict(input_schema or {})),
+                parameter_schema=deepcopy(dict(parameter_schema or {})),
+                outputs=[deepcopy(dict(item)) for item in (outputs or ())],
+                metadata=deepcopy(dict(metadata or {})),
+                runner=runner,
+            )
+            self._check_legacy_identity(legacy.id, legacy.name, "capability")
+            if (legacy.id in self._legacy_capabilities or legacy.id in self._capabilities) and not replace:
+                raise RegistryError(f"capability {legacy.id!r} is already registered")
+            if replace:
+                self._capabilities.pop(legacy.id, None)
+            self._legacy_capabilities[legacy.id] = legacy
+            return legacy
+        if isinstance(capability, CapabilitySpec):
+            self._check_legacy_identity(capability.id, capability.name, "capability")
+            if (capability.id in self._legacy_capabilities or capability.id in self._capabilities) and not replace:
+                raise RegistryError(f"capability {capability.id!r} is already registered")
+            if replace:
+                self._capabilities.pop(capability.id, None)
+            self._legacy_capabilities[capability.id] = capability
+            return capability
+        if (capability.id in self._capabilities or capability.id in self._legacy_capabilities) and not replace:
             raise RegistryError(f"capability {capability.id!r} is already registered")
+        if replace:
+            self._legacy_capabilities.pop(capability.id, None)
         self._capabilities[capability.id] = capability
         return capability
 
-    def capability(self, capability_id: str | None) -> Capability:
-        found = self._capabilities.get(capability_id or "")
+    def capability(self, capability_id: str | None) -> Capability | CapabilitySpec:
+        identifier = capability_id or ""
+        found = self._capabilities.get(identifier) or self._legacy_capabilities.get(identifier)
         if found is None:
             raise UnknownCapabilityError(f"unknown capability {capability_id!r}")
         return found
 
     def has_capability(self, capability_id: str | None) -> bool:
-        return bool(capability_id) and capability_id in self._capabilities
+        return bool(capability_id) and (
+            capability_id in self._capabilities or capability_id in self._legacy_capabilities
+        )
 
-    def register_workflow(self, workflow: Workflow, *, replace: bool = False) -> Workflow:
-        if workflow.id in self._workflows and not replace:
+    def register_workflow(
+        self,
+        workflow: Workflow | WorkflowSpec | None = None,
+        *,
+        id: str | None = None,
+        name: str | None = None,
+        description: str = "",
+        handler: Callable[[Any], Any] | None = None,
+        version: str = "1.0.0",
+        input_schema: Mapping[str, Any] | None = None,
+        outputs: Sequence[Mapping[str, Any]] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+        replace: bool = False,
+    ) -> Workflow | WorkflowSpec:
+        if workflow is None:
+            legacy = WorkflowSpec(
+                id=id or "",
+                name=name or id or "",
+                description=description,
+                handler=handler,
+                version=version,
+                input_schema=deepcopy(dict(input_schema or {})),
+                outputs=[deepcopy(dict(item)) for item in (outputs or ())],
+                metadata=deepcopy(dict(metadata or {})),
+            )
+            self._check_legacy_identity(legacy.id, legacy.name, "workflow")
+            if (legacy.id in self._legacy_workflows or legacy.id in self._workflows) and not replace:
+                raise RegistryError(f"workflow {legacy.id!r} is already registered")
+            if replace:
+                self._workflows.pop(legacy.id, None)
+            self._legacy_workflows[legacy.id] = legacy
+            return legacy
+        if isinstance(workflow, WorkflowSpec):
+            self._check_legacy_identity(workflow.id, workflow.name, "workflow")
+            if (workflow.id in self._legacy_workflows or workflow.id in self._workflows) and not replace:
+                raise RegistryError(f"workflow {workflow.id!r} is already registered")
+            if replace:
+                self._workflows.pop(workflow.id, None)
+            self._legacy_workflows[workflow.id] = workflow
+            return workflow
+        if (workflow.id in self._workflows or workflow.id in self._legacy_workflows) and not replace:
             raise RegistryError(f"workflow {workflow.id!r} is already registered")
+        if replace:
+            self._legacy_workflows.pop(workflow.id, None)
         self._workflows[workflow.id] = workflow
         return workflow
 
-    def workflow(self, workflow_id: str | None) -> Workflow:
-        found = self._workflows.get(workflow_id or "")
+    def workflow(self, workflow_id: str | None) -> Workflow | WorkflowSpec:
+        identifier = workflow_id or ""
+        found = self._workflows.get(identifier) or self._legacy_workflows.get(identifier)
         if found is None:
             raise UnknownWorkflowError(f"unknown workflow {workflow_id!r}")
         return found
 
     def has_workflow(self, workflow_id: str | None) -> bool:
-        return bool(workflow_id) and workflow_id in self._workflows
+        return bool(workflow_id) and (
+            workflow_id in self._workflows or workflow_id in self._legacy_workflows
+        )
 
     # ── Convenience decorator ───────────────────────────────────────────────
 
@@ -509,15 +814,46 @@ class Registry:
 
         return decorate
 
+    def register_handler(self, kind: str, handler: Callable[[Any], Any]) -> None:
+        """Register a host handler for dynamic, review, or answer steps."""
+        if kind not in {"dynamic", "review", "answer"}:
+            raise RegistryError(
+                "custom handlers are supported for answer, dynamic, and review steps"
+            )
+        if not callable(handler):
+            raise TypeError("handler must be callable")
+        self._handlers[kind] = handler
+
+    def handler_for(self, kind: str) -> Callable[[Any], Any] | None:
+        return self._handlers.get(kind)
+
+    def register_catalog_entry(self, scope: str, entry: Mapping[str, Any]) -> dict[str, Any]:
+        if scope not in self._catalog_entries:
+            raise RegistryError(
+                "catalog scope must be operations, tools, skills, or runners"
+            )
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("id"), str) or not str(entry.get("id")).strip():
+            raise RegistryError("catalog entry must contain a non-empty id")
+        value = {
+            key: deepcopy(item)
+            for key, item in entry.items()
+            if key not in {"path", "command", "argv", "env"}
+        }
+        value.setdefault("scope", scope)
+        if any(item.get("id") == value["id"] for item in self._catalog_entries[scope]):
+            raise RegistryError(f"catalog entry {value['id']!r} is already registered")
+        self._catalog_entries[scope].append(value)
+        return deepcopy(value)
+
     # ── Introspection ───────────────────────────────────────────────────────
 
     @property
-    def capabilities(self) -> dict[str, Capability]:
-        return dict(self._capabilities)
+    def capabilities(self) -> dict[str, Any]:
+        return {**self._legacy_capabilities, **self._capabilities}
 
     @property
-    def workflows(self) -> dict[str, Workflow]:
-        return dict(self._workflows)
+    def workflows(self) -> dict[str, Any]:
+        return {**self._legacy_workflows, **self._workflows}
 
     @property
     def runners(self) -> dict[str, RunnerFn]:
@@ -536,6 +872,12 @@ class Registry:
                     f"capability {capability.id!r} references unknown runner "
                     f"{capability.runner!r}"
                 )
+        for capability in self._legacy_capabilities.values():
+            if capability.runner and capability.runner not in self._runners:
+                problems.append(
+                    f"capability {capability.id!r} references unknown runner "
+                    f"{capability.runner!r}"
+                )
         for workflow in self._workflows.values():
             for node in workflow.nodes:
                 if node.runner not in self._runners:
@@ -550,8 +892,7 @@ class Registry:
     def search(
         self,
         query: str,
-        *,
-        scope: Literal["all", "capabilities", "workflows"] = "all",
+        scope: Literal["all", "capabilities", "workflows", "operations", "tools", "skills", "runners"] = "all",
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         """Rank catalog entries against a natural-language query.
@@ -561,18 +902,31 @@ class Registry:
         overriding this — the broker only needs a ranked list of contracts.
         """
         terms = _tokens(query)
+        if scope not in {"all", "capabilities", "workflows", "operations", "tools", "skills", "runners"}:
+            raise RegistryError("catalog scope is invalid")
         pool: list[tuple[str, Any]] = []
         if scope in {"all", "capabilities"}:
             pool.extend(("capability", item) for item in self._capabilities.values())
+            pool.extend(("capability", item) for item in self._legacy_capabilities.values())
         if scope in {"all", "workflows"}:
             pool.extend(("workflow", item) for item in self._workflows.values())
+            pool.extend(("workflow", item) for item in self._legacy_workflows.values())
+        if scope == "all":
+            pool.extend((scope_name, item) for scope_name, rows in self._catalog_entries.items() for item in rows)
+        elif scope in self._catalog_entries:
+            pool.extend((scope, item) for item in self._catalog_entries[scope])
 
         scored: list[tuple[float, str, Any]] = []
         for kind, item in pool:
-            haystack_id = _tokens(item.id)
-            haystack_tags = [token for tag in item.tags for token in _tokens(tag)]
-            haystack_name = _tokens(item.name)
-            haystack_desc = _tokens(item.description)
+            item_id = str(getattr(item, "id", item.get("id", "")) if isinstance(item, Mapping) else getattr(item, "id", ""))
+            item_name = str(item.get("name", "") if isinstance(item, Mapping) else getattr(item, "name", ""))
+            item_description = str(item.get("description", "") if isinstance(item, Mapping) else getattr(item, "description", ""))
+            haystack_id = _tokens(item_id)
+            haystack_tags = [
+                token for tag in (item.get("tags", ()) if isinstance(item, Mapping) else getattr(item, "tags", ())) for token in _tokens(str(tag))
+            ]
+            haystack_name = _tokens(item_name)
+            haystack_desc = _tokens(item_description)
             score = 0.0
             for term in terms:
                 if term in haystack_id:
@@ -587,9 +941,12 @@ class Registry:
                 if any(token.startswith(term) for token in haystack_id + haystack_name):
                     score += 0.5
             if score > 0 or not terms:
-                scored.append((score, item.id, item))
+                scored.append((score, item_id, item))
         scored.sort(key=lambda row: (-row[0], row[1]))
-        return [item.contract() for _, _, item in scored[: max(1, limit)]]
+        return [
+            item.contract() if callable(getattr(item, "contract", None)) else item.to_catalog() if callable(getattr(item, "to_catalog", None)) else dict(item)
+            for _, _, item in scored[: max(1, limit)]
+        ]
 
     def catalog_summary(self, *, limit: int = 40) -> dict[str, Any]:
         """A compact catalog overview for ``session_context``."""
@@ -598,23 +955,72 @@ class Registry:
                 {
                     "id": item.id,
                     "name": item.name,
-                    "tags": list(item.tags),
+                    "tags": list(getattr(item, "tags", ())),
                     "description": item.description[:200],
                 }
-                for item in list(self._capabilities.values())[:limit]
+                for item in list(self.capabilities.values())[:limit]
             ],
             "workflows": [
                 {
                     "id": item.id,
                     "name": item.name,
-                    "tags": list(item.tags),
+                    "tags": list(getattr(item, "tags", ())),
                     "description": item.description[:200],
                 }
-                for item in list(self._workflows.values())[:limit]
+                for item in list(self.workflows.values())[:limit]
             ],
-            "capability_count": len(self._capabilities),
-            "workflow_count": len(self._workflows),
+            "capability_count": len(self.capabilities),
+            "workflow_count": len(self.workflows),
+            "operation_count": len(self._catalog_entries["operations"]),
+            "tool_count": len(self._catalog_entries["tools"]),
+            "skill_count": len(self._catalog_entries["skills"]),
+            "runner_count": len(self._runners),
+            "runner_metadata_count": len(self._catalog_entries["runners"]),
         }
+
+    def catalog(self) -> dict[str, Any]:
+        """Return a complete, JSON-safe catalog snapshot for legacy adapters."""
+        payload: dict[str, Any] = {
+            "capabilities": [
+                item.contract() if callable(getattr(item, "contract", None)) else item.to_catalog()
+                for item in self.capabilities.values()
+            ],
+            "workflows": [
+                item.contract() if callable(getattr(item, "contract", None)) else item.to_catalog()
+                for item in self.workflows.values()
+            ],
+            "operations": deepcopy(self._catalog_entries["operations"]),
+            "tools": deepcopy(self._catalog_entries["tools"]),
+            "skills": deepcopy(self._catalog_entries["skills"]),
+            "runners": deepcopy(self._catalog_entries["runners"]),
+            "capability_count": len(self.capabilities),
+            "workflow_count": len(self.workflows),
+            "operation_count": len(self._catalog_entries["operations"]),
+            "tool_count": len(self._catalog_entries["tools"]),
+            "skill_count": len(self._catalog_entries["skills"]),
+            "runner_count": len(self._runners),
+            "runner_metadata_count": len(self._catalog_entries["runners"]),
+            "step_kinds": ["answer", "capability", "workflow", "dynamic", "review"],
+            "execution_capabilities": [
+                "publish_plan",
+                "update_step",
+                "run_capability",
+                "run_workflow",
+                "execute_plan",
+            ],
+        }
+        snapshot = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        payload["snapshot_sha256"] = hashlib.sha256(snapshot).hexdigest()
+        return payload
+
+    @staticmethod
+    def _check_legacy_identity(identifier: str, name: str, kind: str) -> None:
+        if not isinstance(identifier, str) or not identifier.strip():
+            raise RegistryError(f"{kind} id must be a non-empty string")
+        if not isinstance(name, str) or not name.strip():
+            raise RegistryError(f"{kind} name must be a non-empty string")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", identifier) is None:
+            raise RegistryError(f"{kind} id has an invalid format")
 
 
 def merge_registries(*registries: Registry) -> Registry:
@@ -627,6 +1033,11 @@ def merge_registries(*registries: Registry) -> Registry:
             merged.register_capability(capability, replace=True)
         for workflow in registry.workflows.values():
             merged.register_workflow(workflow, replace=True)
+        for kind, handler in registry._handlers.items():
+            merged.register_handler(kind, handler)
+        for scope, entries in registry._catalog_entries.items():
+            for entry in entries:
+                merged.register_catalog_entry(scope, entry)
     return merged
 
 
@@ -635,13 +1046,25 @@ def source_ref_of(kind: Literal["upload", "artifact", "scratch"], identifier: st
     return f"{kind}:{identifier}"
 
 
+async def invoke_handler(handler: Callable[[Any], Any], context: Any) -> StepResult:
+    """Invoke sync or async compatibility handlers uniformly."""
+    value = handler(context)
+    if inspect.isawaitable(value):
+        value = await value
+    return StepResult.from_value(value)
+
+
 __all__ = [
+    "CapabilitySpec",
     "Capability",
     "CapabilityInput",
     "Parameter",
     "ParameterType",
     "Port",
     "Registry",
+    "StepResult",
+    "WorkflowSpec",
+    "invoke_handler",
     "Workflow",
     "WorkflowNode",
     "merge_registries",

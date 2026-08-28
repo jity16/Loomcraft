@@ -21,6 +21,7 @@ sequence number over a corrupted tail.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -29,7 +30,7 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, AsyncIterator, Callable, Iterable, Iterator, Mapping
 
 from .errors import EventLogError
 
@@ -49,6 +50,11 @@ EVENT_TYPES: tuple[str, ...] = (
     "execution_started",
     "execution_progress",
     "execution_finished",
+    "step_attempt",
+    "step_retry",
+    "step_progress",
+    "step_log",
+    "run_timeout",
     "node_log",
     "artifact_registered",
     "input_required",
@@ -71,6 +77,10 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
+# Compatibility spelling used by the extracted runtime.
+utc_now = utcnow_iso
+
+
 @dataclass(frozen=True, slots=True)
 class Event:
     """One persisted, sequenced observation."""
@@ -81,7 +91,21 @@ class Event:
     ts: str
 
     def to_dict(self) -> dict[str, Any]:
-        return {"seq": self.seq, "event": self.event, "data": self.data, "ts": self.ts}
+        return {
+            "schema": "loomcraft-event-v1",
+            "seq": self.seq,
+            "event": self.event,
+            "data": self.data,
+            "ts": self.ts,
+        }
+
+    def as_dict(self) -> dict[str, Any]:
+        """Compatibility envelope used by the extracted renderer/runtime."""
+        payload = dict(self.data)
+        payload.setdefault("_event_seq", self.seq)
+        value = self.to_dict()
+        value["data"] = payload
+        return value
 
     @staticmethod
     def from_dict(row: Mapping[str, Any]) -> "Event":
@@ -139,6 +163,10 @@ def _empty_cursor() -> dict[str, Any]:
 def _atomic_write_json(path: Path, value: Mapping[str, Any]) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    try:
+        tmp.chmod(0o600)
+    except OSError:
+        pass
     os.replace(tmp, path)
 
 
@@ -152,6 +180,10 @@ def _open_log(path: Path, flags: int, mode: int = 0o600) -> int:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise EventLogError("event log must be a regular file")
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
         return fd
     except BaseException:
         os.close(fd)
@@ -164,12 +196,18 @@ def _open_log(path: Path, flags: int, mode: int = 0o600) -> int:
 class EventLog:
     """A durable, hash-chained, append-only JSONL event log for one session."""
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        self.cursor_path = self.path.with_name(self.path.name + ".cursor.json")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(self, path: str | Path | None = None) -> None:
+        self.path = Path(path) if path is not None else None
+        self.cursor_path = (
+            self.path.with_name(self.path.name + ".cursor.json")
+            if self.path is not None
+            else None
+        )
+        if self.path is not None:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._subscribers: list[Callable[[Event], None]] = []
+        self._memory_events: list[Event] = []
 
     # ── Subscriptions ───────────────────────────────────────────────────────
 
@@ -187,11 +225,24 @@ class EventLog:
 
     # ── Reading ─────────────────────────────────────────────────────────────
 
-    def read(self, *, after_seq: int = 0) -> list[Event]:
+    def read(self, after_seq: int = 0, *, after: int | None = None) -> list[Event]:
         """Return persisted events with ``seq > after_seq``."""
+        if after is not None:
+            after_seq = after
         return list(self.iter_events(after_seq=after_seq))
 
+    def append_event(self, event: str, data: Mapping[str, Any] | None = None) -> Event:
+        """Compatibility alias for stores written against the extracted API."""
+        return self.append(event, data)
+
     def iter_events(self, *, after_seq: int = 0) -> Iterator[Event]:
+        if self.path is None:
+            with self._lock:
+                snapshot = list(self._memory_events)
+            for event in snapshot:
+                if event.seq > after_seq:
+                    yield event
+            return
         if not self.path.exists():
             return
         with self.path.open("r", encoding="utf-8") as handle:
@@ -212,6 +263,8 @@ class EventLog:
     @property
     def last_seq(self) -> int:
         with self._lock:
+            if self.path is None:
+                return len(self._memory_events)
             return int(self._cursor()["seq"])
 
     # ── Writing ─────────────────────────────────────────────────────────────
@@ -223,6 +276,21 @@ class EventLog:
         observe an event that is not in the log.
         """
         with self._lock:
+            if self.path is None:
+                record = Event(
+                    seq=len(self._memory_events) + 1,
+                    event=event,
+                    data=dict(data or {}),
+                    ts=utcnow_iso(),
+                )
+                self._memory_events.append(record)
+                subscribers = list(self._subscribers)
+                for callback in subscribers:
+                    try:
+                        callback(record)
+                    except Exception:
+                        pass
+                return record
             cursor = self._cursor()
             seq = int(cursor["seq"]) + 1
             row = {
@@ -287,6 +355,8 @@ class EventLog:
         the append path does not pay this cost.
         """
         with self._lock:
+            if self.path is None:
+                return True
             try:
                 cursor = self._load_cursor()
             except EventLogError:
@@ -409,10 +479,46 @@ class MemoryEventLog(EventLog):
         return True
 
 
+def encode_sse(event: Event) -> bytes:
+    """Encode one event as an SSE frame with a resumable event id."""
+    payload = json.dumps(event.as_dict(), ensure_ascii=False, separators=(",", ":"))
+    return f"id: {event.seq}\nevent: {event.event}\ndata: {payload}\n\n".encode("utf-8")
+
+
+async def iter_sse(
+    log: EventLog, after: int = 0, heartbeat_seconds: float = 15.0
+) -> AsyncIterator[bytes]:
+    """Replay and stream events from either durable or memory logs."""
+    queue: asyncio.Queue[Event] = asyncio.Queue()
+    unsubscribe = log.subscribe(lambda event: queue.put_nowait(event))
+    last_sent = max(0, int(after))
+    try:
+        for event in log.read(after_seq=last_sent):
+            if event.seq > last_sent:
+                yield encode_sse(event)
+                last_sent = event.seq
+        while True:
+            try:
+                event = await asyncio.wait_for(
+                    queue.get(), timeout=max(1.0, float(heartbeat_seconds))
+                )
+            except asyncio.TimeoutError:
+                yield b": loomcraft-heartbeat\n\n"
+                continue
+            if event.seq > last_sent:
+                yield encode_sse(event)
+                last_sent = event.seq
+    finally:
+        unsubscribe()
+
+
 __all__ = [
     "EVENT_TYPES",
     "Event",
     "EventLog",
     "MemoryEventLog",
+    "encode_sse",
+    "iter_sse",
     "utcnow_iso",
+    "utc_now",
 ]

@@ -111,7 +111,7 @@ succeeded, unblocking the rest of the graph and the final answer. With it, a
 `succeeded` capability step always corresponds to a real run that produced real
 artifacts — which is what lets a reviewer trust the plan view at all.
 
-`dynamic`, `review`, and `answer` steps *are* agent-reported, because the agent
+`dynamic`, unbound `review`, and `answer` steps *are* agent-reported, because the agent
 genuinely is the executor. The honest framing: those steps carry the same
 epistemic weight as anything else the model says, and the way to raise it is to
 have the agent register artifacts so the claim has evidence attached.
@@ -167,8 +167,10 @@ anything.
 
 ## Decision: events are the only output
 
-The engine and broker never return state to a caller and separately notify a UI.
-They emit events, and everything else is derived.
+The engine and broker may return handles/results to their immediate caller, but
+the durable event stream is the authoritative UI boundary. They emit events, and
+the renderer derives its state from those events rather than trusting a second
+notification path.
 
 That is what allows the reducer to be one function used for both live streaming
 and history replay. If live updates went through a different code path from
@@ -214,6 +216,10 @@ The tempting alternative is a fast path: "one node, no dependencies, just await
 the runner". It would be maybe thirty lines shorter and would immediately drift.
 Retry, cancellation, artifact registration, progress events, and timeout handling
 would exist twice, and the second copy would lag.
+
+The optional `execute_plan` adapter converts a whole published Plan into the
+same `ExecutionGraph` driver; typed workflows use a nested instance of that
+driver so their internal dependencies and artifacts are preserved.
 
 Same reasoning for cancellation: `Run.cancel()` awaits every node task before
 returning. Returning early would be simpler and would let a node keep writing
@@ -277,8 +283,9 @@ graph-layout engine into their bundle or a web framework into their service. The
 engine runs in a Django view, a Celery worker, or a Lambda without dragging
 FastAPI along.
 
-The layout is ~200 lines because plan graphs are ≤24 nodes — a general graph
-library solves a much harder problem than the one we have.
+The layout is ~200 lines because plan graphs are normally small (24 nodes is the
+recommended readable size); the fused contract permits up to 256 nodes for
+generated plans and nested workflows.
 
 ---
 
@@ -364,9 +371,9 @@ deployments need session affinity, or an engine backed by a distributed queue �
 the `Engine` interface is small enough to reimplement, but LoomCraft does not
 ship that.
 
-**24-step plan ceiling.** Deliberate: bigger plans are unreadable and usually
-want a workflow for the fixed parts. Raise `MAX_STEPS` if your domain genuinely
-needs it, and expect the renderer to need scrolling.
+**256-step plan ceiling.** Deliberate: 24 nodes is the recommended readable
+size; bigger plans usually want a workflow for the fixed parts. Raise the host
+limit only when the renderer and review experience can handle the extra nodes.
 
 **Lexical capability search.** Fine for tens of capabilities, weak at hundreds.
 Subclass `Registry.search` for embeddings — see
