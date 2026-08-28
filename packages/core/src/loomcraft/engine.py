@@ -14,13 +14,21 @@ What the driver guarantees:
 
 - **Skip propagation.** A node whose upstream failed, was skipped, or was
   cancelled is marked ``skipped``; it never runs on stale inputs.
-- **Retry with backoff.** ``max_attempts`` and ``retry_backoff_seconds`` are per
-  node. A retry gets a fresh :class:`~loomcraft.context.NodeContext` with an
-  incremented ``attempt``.
+- **Retry with backoff.** ``max_attempts``, ``retry_backoff_seconds``, a growth
+  multiplier and an absolute cap are per node. A retry gets a fresh
+  :class:`~loomcraft.context.NodeContext` with an incremented ``attempt``.
 - **Timeouts.** A node that exceeds ``timeout_seconds`` is cancelled and treated
   as a (possibly retryable) failure.
-- **Human approval.** A node may return ``waiting_approval``; the run parks in
-  ``paused_approval`` until :meth:`Run.approve` resolves it.
+- **Human approval.** ``requires_approval`` parks a node *before* its runner is
+  invoked, so the gate sits in front of the side effect rather than behind it. A
+  runner may also return ``waiting_approval`` to pause mid-work. Either way the
+  run parks in ``paused_approval`` until :meth:`Run.approve` resolves it.
+- **Artifacts are promoted, not streamed.** A node's emitted files are only
+  registered once the attempt that produced them succeeded, so a partial write
+  from a failed try never becomes a deliverable or a downstream input.
+- **Failure policy.** ``on_failure="continue"`` lets independent dependents run
+  even though this node failed — for the branch whose emptiness is itself a
+  result.
 - **Stall detection.** Nothing runnable, nothing in flight, and not everything
   terminal is treated as a bug and fails the run — never as success.
 - **Cancellation is awaited.** :meth:`Run.cancel` does not return until every
@@ -32,6 +40,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
+import json
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -39,10 +49,10 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, Sequence
 
 from .context import EmittedArtifact, InputFile, LogLevel, NodeContext, NodeResult
-from .errors import RegistryError
+from .errors import RegistryError, SourceError
 from .graph import layers, validate as validate_graph
 from .registry import Capability, Registry, Workflow
-from .store import Session
+from .store import Session, public_artifact
 
 NodeStatus = Literal[
     "pending", "running", "waiting_approval", "succeeded", "failed", "skipped", "cancelled"
@@ -53,6 +63,11 @@ RunStatus = Literal[
 
 TERMINAL_NODE: frozenset[str] = frozenset({"succeeded", "failed", "skipped", "cancelled"})
 TERMINAL_RUN: frozenset[str] = frozenset({"succeeded", "failed", "cancelled"})
+
+#: A node's ``detail`` is echoed into the model's context and persisted in the
+#: event log. Both have budgets, so an accidental data dump fails the node
+#: rather than the session.
+MAX_RESULT_DETAIL_BYTES = 256 * 1024
 
 
 # ── Graph model ─────────────────────────────────────────────────────────────
@@ -74,7 +89,24 @@ class ExecutionNode:
     timeout_seconds: float | None = None
     max_attempts: int = 1
     retry_backoff_seconds: float = 1.0
+    retry_backoff_multiplier: float = 2.0
+    #: Absolute ceiling on one backoff interval. ``None`` means uncapped.
+    retry_max_backoff_seconds: float | None = None
+    #: Park this node at a human gate *before* invoking its runner.
     requires_approval: bool = False
+    #: What this node's failure does to its dependents.
+    on_failure: Literal["stop", "continue", "require_approval"] = "stop"
+    #: A runner supplied by the graph builder instead of looked up in the
+    #: registry. This is what lets the plan adapter execute dynamic/review/
+    #: answer steps without registering throwaway runners globally.
+    runner_fn: Callable[[NodeContext], Any] | None = None
+    #: ``{upstream_port_name: local_input_key}``. Without it an upstream
+    #: artifact binds under its own port name, which only works when producer
+    #: and consumer happened to agree on a word.
+    input_ports: Mapping[str, str] = field(default_factory=dict)
+    #: ``{input_key: (".csv", ...)}`` enforced at bind time, so a capability's
+    #: declared file types hold even for files arriving from upstream.
+    input_extensions: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +116,7 @@ class ExecutionGraph:
     id: str
     name: str
     nodes: tuple[ExecutionNode, ...]
-    kind: Literal["capability", "workflow"] = "capability"
+    kind: Literal["capability", "workflow", "plan"] = "capability"
     source_id: str | None = None
 
     def __post_init__(self) -> None:
@@ -128,6 +160,10 @@ def graph_from_capability(
         name=capability.name,
         runner=capability.runner,
         inputs={key: tuple(value) for key, value in sources.items()},
+        input_ports={item.effective_port: item.key for item in capability.inputs},
+        input_extensions={
+            item.key: item.allowed_extensions for item in capability.inputs
+        },
         parameters=dict(parameters),
         config=dict(capability.config),
         outputs=tuple(port.name for port in capability.outputs),
@@ -167,6 +203,11 @@ def graph_from_workflow(
                 runner=spec.runner,
                 depends_on=tuple(spec.depends_on),
                 inputs=bound,
+                input_extensions={
+                    item.key: item.allowed_extensions
+                    for item in workflow.inputs
+                    if item.key in spec.inputs
+                },
                 parameters=dict(parameters),
                 config=dict(spec.config),
                 outputs=tuple(port.name for port in spec.outputs),
@@ -213,7 +254,7 @@ class NodeState:
             "error": self.error,
             "detail": self.detail,
             "duration_seconds": self.duration_seconds,
-            "artifacts": list(self.artifacts),
+            "artifacts": [public_artifact(item) for item in self.artifacts],
         }
 
 
@@ -230,19 +271,44 @@ class Run:
         self.started_at = time.monotonic()
         self.finished_at: float | None = None
         self.error: str | None = None
+        #: Set when this graph was launched to satisfy one step of a published
+        #: plan. The engine stays graph-oriented; the broker uses this to
+        #: project state back onto the plan and to route approvals.
+        self.plan_step_id: str | None = None
 
         self._engine = engine
         self._wake = asyncio.Event()
         self._done = asyncio.Event()
+        #: Set when the run is terminal *or* parked at an approval gate — the
+        #: two states in which it will not progress without outside input.
+        self._settled = asyncio.Event()
         self._cancel = asyncio.Event()
         self._driver: asyncio.Task[None] | None = None
         self._tasks: set[asyncio.Task[None]] = set()
         self._approvals: dict[str, bool] = {}
+        #: Nodes whose pre-execution approval gate a human has already cleared.
+        self._preapproved: set[str] = set()
 
     # ── Public control surface ──────────────────────────────────────────────
 
     async def wait(self) -> "Run":
+        """Await a terminal status.
+
+        A run parked at an approval gate is *not* terminal, so this will block
+        until someone approves it. Use :meth:`settled` when you want to hand
+        control back at the gate instead.
+        """
         await self._done.wait()
+        return self
+
+    async def settled(self) -> "Run":
+        """Await either a terminal status or an approval pause.
+
+        This is what a caller almost always wants: an approval gate is a
+        request for input, and blocking on it from the same task that would
+        deliver that input is a deadlock.
+        """
+        await self._settled.wait()
         return self
 
     async def cancel(self) -> bool:
@@ -303,18 +369,47 @@ class Run:
 
     @property
     def artifacts(self) -> list[dict[str, Any]]:
+        """Every artifact this run produced, each listed once.
+
+        A composite node adopts its nested run's artifacts, so the same record
+        can appear on two nodes; the reader should see one file, not two.
+        """
         collected: list[dict[str, Any]] = []
+        seen: set[str] = set()
         for state in self.nodes.values():
-            collected.extend(state.artifacts)
+            for artifact in state.artifacts:
+                identity = str(artifact.get("id") or artifact.get("source_ref") or "")
+                if identity and identity in seen:
+                    continue
+                if identity:
+                    seen.add(identity)
+                collected.append(artifact)
         return collected
 
     @property
     def failed_nodes(self) -> list[dict[str, Any]]:
+        """Every node that failed, tolerated or not.
+
+        ``tolerated`` marks a node whose failure the graph explicitly allowed
+        via ``on_failure="continue"``. Such a failure is still reported — it is
+        just not treated as the run's verdict.
+        """
+        policies = {node.id: node.on_failure for node in self.graph.nodes}
         return [
-            {"node_id": state.id, "error": state.error, "attempts": state.attempts}
+            {
+                "node_id": state.id,
+                "error": state.error,
+                "attempts": state.attempts,
+                "tolerated": policies.get(state.id) == "continue",
+            }
             for state in self.nodes.values()
             if state.status == "failed"
         ]
+
+    @property
+    def blocking_failures(self) -> list[dict[str, Any]]:
+        """Failures that should make the whole run count as failed."""
+        return [row for row in self.failed_nodes if not row["tolerated"]]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -328,7 +423,7 @@ class Run:
             "error": self.error,
             "nodes": {key: state.to_dict() for key, state in self.nodes.items()},
             "failed_nodes": self.failed_nodes,
-            "artifacts": self.artifacts,
+            "artifacts": [public_artifact(item) for item in self.artifacts],
         }
 
     # ── Internals ───────────────────────────────────────────────────────────
@@ -339,6 +434,7 @@ class Run:
         self.status = status
         self.finished_at = time.monotonic()
         self._done.set()
+        self._settled.set()
 
 
 class Engine:
@@ -350,12 +446,16 @@ class Engine:
         session: Session,
         *,
         max_parallel: int = 8,
+        max_retained_runs: int = 128,
         emit: Callable[[str, Mapping[str, Any]], Any] | None = None,
         stream_logs: bool = False,
     ) -> None:
         self.registry = registry
         self.session = session
         self.max_parallel = max(1, max_parallel)
+        #: Finished runs are kept so a late approval or a UI refresh can still
+        #: read them, but a long-lived server must not accumulate them forever.
+        self.max_retained_runs = max(1, int(max_retained_runs))
         self._emit = emit or (lambda name, data: session.emit(name, data))
         self.stream_logs = stream_logs
         self._runs: dict[str, Run] = {}
@@ -365,8 +465,11 @@ class Engine:
 
     def submit(self, graph: ExecutionGraph, *, run_id: str | None = None) -> Run:
         """Start a run in the background and return its handle immediately."""
+        self._prune_runs()
         missing = [
-            node.runner for node in graph.nodes if not self.registry.has_runner(node.runner)
+            node.runner
+            for node in graph.nodes
+            if node.runner_fn is None and not self.registry.has_runner(node.runner)
         ]
         if missing:
             raise RegistryError(
@@ -379,11 +482,32 @@ class Engine:
         run._driver = asyncio.create_task(self._drive(run), name=f"loomcraft-drive-{identifier}")
         return run
 
+    def _prune_runs(self) -> None:
+        """Drop the oldest terminal runs once the retention budget is reached.
+
+        Only terminal runs are eligible — a paused or running handle is still
+        someone's live state.
+        """
+        excess = len(self._runs) - self.max_retained_runs + 1
+        if excess <= 0:
+            return
+        for identifier, run in list(self._runs.items()):
+            if excess <= 0:
+                break
+            if run.status in TERMINAL_RUN:
+                self._runs.pop(identifier, None)
+                excess -= 1
+
     async def execute(self, graph: ExecutionGraph, *, run_id: str | None = None) -> Run:
-        """Submit and await a graph in one call."""
+        """Submit a graph and return once it settles.
+
+        Returns at a terminal status, or at an approval pause — check
+        ``run.status``. Blocking through a gate would deadlock the caller that
+        is supposed to resolve it.
+        """
         run = self.submit(graph, run_id=run_id)
         try:
-            await run.wait()
+            await run.settled()
         except asyncio.CancelledError:
             await run.cancel()
             raise
@@ -410,6 +534,7 @@ class Engine:
                     return
 
                 self._apply_approvals(run)
+                self._gate_ready_approvals(run)
                 self._propagate_skips(run)
 
                 runnable = self._runnable(run)
@@ -441,8 +566,10 @@ class Engine:
                                 "nodes": run.pending_approvals,
                             },
                         )
+                    run._settled.set()
                 elif (runnable or in_flight) and run.status == "paused_approval":
                     run.status = "running"
+                    run._settled.clear()
 
                 if not runnable and in_flight == 0 and waiting == 0:
                     # Not everything is terminal, yet nothing can move. A cyclic
@@ -471,15 +598,62 @@ class Engine:
 
     def _runnable(self, run: Run) -> list[str]:
         statuses = {key: state.status for key, state in run.nodes.items()}
+        policies = {node.id: node.on_failure for node in run.graph.nodes}
         ready: list[str] = []
         for node in run.graph.nodes:
             if statuses[node.id] != "pending":
                 continue
-            if all(statuses.get(dep) == "succeeded" for dep in node.depends_on):
+            if self._dependencies_ready(node, statuses, policies):
                 ready.append(node.id)
         return ready
 
+    @staticmethod
+    def _dependencies_ready(
+        node: ExecutionNode,
+        statuses: Mapping[str, str],
+        policies: Mapping[str, str],
+    ) -> bool:
+        """Success clears a dependency; so does a failure marked ``continue``."""
+        return all(
+            statuses.get(dep) == "succeeded"
+            or (
+                statuses.get(dep) in {"failed", "skipped"}
+                and policies.get(dep) == "continue"
+            )
+            for dep in node.depends_on
+        )
+
+    def _gate_ready_approvals(self, run: Run) -> None:
+        """Park approval-gated nodes before their runner can do anything.
+
+        This is the difference between "a human confirmed the result" and "a
+        human authorised the action". A node declaring ``requires_approval``
+        wants the second, so it must not be dispatched until someone says yes.
+        """
+        statuses = {key: state.status for key, state in run.nodes.items()}
+        policies = {node.id: node.on_failure for node in run.graph.nodes}
+        for node in run.graph.nodes:
+            state = run.nodes[node.id]
+            if (
+                state.status == "pending"
+                and node.requires_approval
+                and node.id not in run._preapproved
+                and self._dependencies_ready(node, statuses, policies)
+            ):
+                state.status = "waiting_approval"
+                state.error = f"approval required before executing {node.name}"
+                self._emit(
+                    "execution_progress",
+                    {
+                        "execution_id": run.id,
+                        "node_id": node.id,
+                        "status": "waiting_approval",
+                        "attempt": 0,
+                    },
+                )
+
     def _propagate_skips(self, run: Run) -> None:
+        policies = {node.id: node.on_failure for node in run.graph.nodes}
         changed = True
         while changed:
             changed = False
@@ -490,6 +664,7 @@ class Engine:
                     continue
                 if any(
                     statuses.get(dep) in {"failed", "skipped", "cancelled"}
+                    and policies.get(dep) != "continue"
                     for dep in node.depends_on
                 ):
                     state.status = "skipped"
@@ -510,9 +685,19 @@ class Engine:
             state = run.nodes.get(node_id)
             if state is None or state.status != "waiting_approval":
                 continue
-            state.status = "succeeded" if approved else "failed"
-            state.error = None if approved else "rejected by reviewer"
-            state.finished_at = time.monotonic()
+            node = run.graph.node(node_id)
+            if approved and node.requires_approval and state.attempts == 0:
+                # A pre-execution gate: approval means "now go and do it",
+                # not "call it done". Release the node back to the scheduler.
+                run._preapproved.add(node_id)
+                state.status = "pending"
+                state.error = None
+                state.finished_at = None
+            else:
+                # A runner asked mid-flight, or the reviewer said no.
+                state.status = "succeeded" if approved else "failed"
+                state.error = None if approved else "rejected by reviewer"
+                state.finished_at = time.monotonic()
             run._approvals.pop(node_id, None)
             self._emit(
                 "approval_resolved",
@@ -527,11 +712,16 @@ class Engine:
         statuses = [state.status for state in run.nodes.values()]
         if forced is not None:
             final: RunStatus = forced
-        elif any(status == "failed" for status in statuses):
+        elif run.blocking_failures:
             final = "failed"
         elif any(status == "cancelled" for status in statuses):
             final = "cancelled"
         else:
+            # A node that failed under ``on_failure="continue"`` does not fail
+            # the run: the plan author declared that outcome acceptable, and
+            # returning "failed" anyway would make the policy pointless — the
+            # agent would replan exactly as if it had said "stop". The failure
+            # is still on the node and in ``failed_nodes``.
             final = "succeeded"
         run._finish(final)
 
@@ -539,7 +729,7 @@ class Engine:
 
     async def _run_node(self, run: Run, node: ExecutionNode) -> None:
         state = run.nodes[node.id]
-        runner = self.registry.runner(node.runner)
+        runner = node.runner_fn or self.registry.runner(node.runner)
         attempts = max(1, node.max_attempts)
 
         try:
@@ -567,29 +757,52 @@ class Engine:
                     state.error = f"input binding failed: {exc}"
                     break
 
+                # Buffered, not registered: a retryable failure must not leave
+                # a half-written file behind as a deliverable.
+                emitted: list[EmittedArtifact] = []
+                adopted: list[dict[str, Any]] = []
+                config = dict(node.config)
+                if node.id in run._preapproved:
+                    config["approved"] = True
+
                 ctx = NodeContext(
                     run_id=run.id,
                     node_id=node.id,
                     attempt=attempt,
                     inputs=inputs,
+                    dependencies={
+                        dependency: run.nodes[dependency].detail
+                        for dependency in node.depends_on
+                        if dependency in run.nodes
+                    },
                     parameters=dict(node.parameters),
-                    config=dict(node.config),
+                    config=config,
                     workdir=self.session.run_dir(run.id) / node.id / f"attempt-{attempt}",
                     outputs=node.outputs,
                     on_log=self._node_logger(run),
                     on_progress=self._node_progress(run),
-                    on_artifact=self._node_artifact(run, node, state),
+                    on_artifact=emitted.append,
+                    on_adopted_artifact=adopted.append,
                     cancel_event=run._cancel,
                 )
 
                 try:
                     async with self._semaphore:
+
+                        async def invoke(
+                            call: Any = runner, context: NodeContext = ctx
+                        ) -> NodeResult:
+                            # A graph-supplied runner_fn may be a plain
+                            # function; registry runners are always async.
+                            value = call(context)
+                            return await value if inspect.isawaitable(value) else value
+
                         if node.timeout_seconds:
                             result = await asyncio.wait_for(
-                                runner(ctx), timeout=node.timeout_seconds
+                                invoke(), timeout=node.timeout_seconds
                             )
                         else:
-                            result = await runner(ctx)
+                            result = await invoke()
                 except asyncio.CancelledError:
                     state.status = "cancelled"
                     state.error = "cancelled"
@@ -601,6 +814,19 @@ class Engine:
                 except Exception as exc:  # noqa: BLE001 - stable runner boundary
                     result = NodeResult.fail(f"{type(exc).__name__}: {exc}")
 
+                result = self._checked_detail(result)
+
+                if result.status in {"succeeded", "waiting_approval"}:
+                    # The attempt stands, so its outputs become real.
+                    try:
+                        for record in adopted:
+                            self._adopt_artifact(state, record)
+                        self._register_node_artifacts(run, node, state, emitted)
+                    except Exception as exc:  # noqa: BLE001 - artifact boundary
+                        result = NodeResult.fail(
+                            f"artifact registration failed: {type(exc).__name__}: {exc}"
+                        )
+
                 state.detail = dict(result.detail)
                 if result.status == "succeeded":
                     state.status = "succeeded"
@@ -610,13 +836,28 @@ class Engine:
                     state.status = "waiting_approval"
                     state.error = result.error
                     break
+                if result.status == "skipped":
+                    state.status = "skipped"
+                    state.error = result.error
+                    break
 
                 state.error = result.error or "node failed"
                 should_retry = result.retryable and attempt < attempts and not run.cancelled
                 if not should_retry:
-                    state.status = "failed"
+                    # ``require_approval`` turns a terminal failure into a
+                    # decision rather than an outcome: a human sees the error
+                    # and chooses whether the graph carries on.
+                    state.status = (
+                        "waiting_approval"
+                        if node.on_failure == "require_approval"
+                        else "failed"
+                    )
                     break
-                delay = node.retry_backoff_seconds * (2 ** (attempt - 1))
+                delay = max(0.0, node.retry_backoff_seconds) * (
+                    max(1.0, node.retry_backoff_multiplier) ** (attempt - 1)
+                )
+                if node.retry_max_backoff_seconds is not None:
+                    delay = min(max(0.0, node.retry_max_backoff_seconds), delay)
                 self._emit(
                     "execution_progress",
                     {
@@ -661,15 +902,17 @@ class Engine:
     def _bind_inputs(self, run: Run, node: ExecutionNode) -> dict[str, list[InputFile]]:
         """Resolve declared source refs plus artifacts produced upstream.
 
-        Upstream artifacts are keyed by their emitting port name, so a workflow
-        node reads ``ctx.input("cleaned_table")`` regardless of which upstream
-        node produced it.
+        Upstream artifacts arrive keyed by their emitting port name, remapped
+        through ``input_ports`` when producer and consumer use different words
+        for the same file. Everything goes through ``resolve_source`` so a file
+        is re-verified immediately before the node that will read it.
         """
         bound: dict[str, list[InputFile]] = {}
         for key, refs in node.inputs.items():
             files: list[InputFile] = []
             for ref in refs:
                 resolved = self.session.resolve_source(ref)
+                self._validate_input_extension(node, key, resolved.filename)
                 files.append(
                     InputFile(
                         key=key,
@@ -686,20 +929,52 @@ class Engine:
         for dependency in node.depends_on:
             for artifact in run.nodes[dependency].artifacts:
                 port = str(artifact.get("port_name") or "output")
-                bound.setdefault(port, []).append(
+                key = str(node.input_ports.get(port, port))
+                source_ref = str(artifact.get("source_ref") or "")
+                if not source_ref:
+                    raise SourceError("upstream artifact is missing its source reference")
+                resolved = self.session.resolve_source(source_ref)
+                self._validate_input_extension(node, key, resolved.filename)
+                bound.setdefault(key, []).append(
                     InputFile(
-                        key=port,
-                        path=self.session.root / str(artifact["relpath"]),
-                        filename=str(artifact["filename"]),
-                        size=int(artifact["size"]),
-                        checksum=str(artifact["checksum"]),
-                        source_ref=str(artifact.get("source_ref", "")),
-                        content_type=str(
-                            artifact.get("content_type", "application/octet-stream")
-                        ),
+                        key=key,
+                        path=resolved.path,
+                        filename=resolved.filename,
+                        size=resolved.size,
+                        checksum=resolved.checksum,
+                        source_ref=resolved.source_ref,
+                        content_type=resolved.content_type,
                     )
                 )
         return bound
+
+    @staticmethod
+    def _validate_input_extension(node: ExecutionNode, key: str, filename: str) -> None:
+        """Hold a capability's declared file types for upstream files too."""
+        allowed = tuple(node.input_extensions.get(key, ()))
+        if allowed and not filename.casefold().endswith(
+            tuple(extension.casefold() for extension in allowed)
+        ):
+            raise SourceError(
+                f"input {key!r} requires one of: " + ", ".join(allowed)
+            )
+
+    @staticmethod
+    def _checked_detail(result: NodeResult) -> NodeResult:
+        """Fail the node when its detail cannot be persisted or streamed."""
+        try:
+            encoded = json.dumps(
+                result.detail, ensure_ascii=False, allow_nan=False
+            ).encode("utf-8")
+        except (TypeError, ValueError):
+            return NodeResult.fail("node result detail is not JSON-serializable")
+        if len(encoded) > MAX_RESULT_DETAIL_BYTES:
+            return NodeResult.fail(
+                "node result detail exceeds the "
+                f"{MAX_RESULT_DETAIL_BYTES // 1024} KiB limit; "
+                "emit an artifact instead"
+            )
+        return result
 
     def _node_logger(self, run: Run) -> Callable[[str, LogLevel, str], None]:
         def log(node_id: str, level: LogLevel, message: str) -> None:
@@ -732,21 +1007,49 @@ class Engine:
 
         return progress
 
-    def _node_artifact(
-        self, run: Run, node: ExecutionNode, state: NodeState
-    ) -> Callable[[EmittedArtifact], None]:
-        def register(artifact: EmittedArtifact) -> None:
+    def _register_node_artifacts(
+        self,
+        run: Run,
+        node: ExecutionNode,
+        state: NodeState,
+        artifacts: Sequence[EmittedArtifact],
+    ) -> None:
+        """Promote a successful attempt's emitted files into session artifacts.
+
+        Called only once the attempt has succeeded or parked for approval. A
+        retry may write a partial file before discovering a transient failure;
+        deferring registration keeps those bytes out of downstream bindings and
+        out of the user's deliverables.
+        """
+        for artifact in artifacts:
             record = self.session.add_artifact(
                 artifact.path,
                 port_name=artifact.port_name,
                 display_name=artifact.filename,
+                content_type=artifact.content_type,
+                step_id=(
+                    run.plan_step_id
+                    or (node.id if run.graph.kind == "plan" else None)
+                ),
                 run_id=run.id,
                 node_id=node.id,
             )
             state.artifacts.append(record)
-            self._emit("artifact_registered", {"artifact": record})
+            self._emit("artifact_registered", {"artifact": public_artifact(record)})
 
-        return register
+    def _adopt_artifact(self, state: NodeState, record: Mapping[str, Any]) -> None:
+        """Attach an artifact a nested run already registered to this node."""
+        source_ref = str(record.get("source_ref") or "")
+        if not source_ref:
+            raise SourceError("adopted artifact is missing its source reference")
+        self.session.resolve_source(source_ref)
+        identity = str(record.get("id") or source_ref)
+        if any(
+            str(item.get("id") or item.get("source_ref")) == identity
+            for item in state.artifacts
+        ):
+            return
+        state.artifacts.append(dict(record))
 
 
 def scratch_workdir(session: Session, run_id: str, node_id: str) -> Path:
@@ -764,6 +1067,7 @@ __all__ = [
     "RunStatus",
     "TERMINAL_NODE",
     "TERMINAL_RUN",
+    "MAX_RESULT_DETAIL_BYTES",
     "graph_from_capability",
     "graph_from_workflow",
     "scratch_workdir",

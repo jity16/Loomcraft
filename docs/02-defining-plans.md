@@ -21,23 +21,37 @@ replan. This is the reference for what the server will and will not accept.
 {
   "goal": "string, 1–2000 chars, required",
   "summary": "string, ≤2000 chars, optional",
-  "revision": 1,                      // integer 1–100, required, must increase
+  "revision": 1,                      // integer 1–1000, required, must increase
   "reason": null,                     // required when replacing a plan
-  "steps": [                          // 1–24 steps
+  "analysis_profile": null,           // optional label; requires objectives
+  "objectives": [],                   // optional, ≤64 — see below
+  "analysis_coverage": [],            // one entry per objective
+  "metadata": {},                     // free-form
+  "steps": [                          // 1–256 steps (24 is the readable size)
     {
       "id": "clean",                  // ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$
       "title": "Clean the table",     // 1–160 chars
       "kind": "capability",           // answer|capability|workflow|dynamic|review
-      "depends_on": [],               // ≤24 step ids, must all exist
-      "capability": "gwas.qc",      // required iff kind is capability|workflow
-      "description": ""               // ≤1000 chars, optional
+      "depends_on": [],               // step ids, must all exist
+      "capability": "gwas.qc",        // required for capability|workflow,
+                                      // optional on review, forbidden otherwise
+      "description": "",              // ≤1000 chars, optional
+      "retry": {                      // optional; omit to inherit the capability's
+        "max_attempts": 3,            // 0–20 (0 and 1 both mean "run once")
+        "backoff_seconds": 2,         // 0–3600
+        "backoff_multiplier": 2,      // 1–10
+        "max_backoff_seconds": 60     // 0–86400
+      },
+      "timeout_seconds": 900,         // > 0, one attempt
+      "on_failure": "stop",           // stop | continue | require_approval
+      "metadata": {}
     }
   ]
 }
 ```
 
-Steps also carry `status`, `summary`, and `execution`. Those are **server-owned**:
-a model may send them, and `validate_plan` throws them away.
+Steps also carry `status`, `summary`, `execution` and `attempts`. Those are
+**server-owned**: a model may send them, and `validate_plan` throws them away.
 
 ```python
 validated = validate_plan({
@@ -65,7 +79,7 @@ raises `PlanValidationError` on the first violation.
 | No self-dependency | `{"id": "a", "depends_on": ["a"]}` |
 | No duplicate dependencies | `depends_on: ["a", "a"]` |
 | The graph is acyclic | `a → b → c → a` |
-| 1–24 steps | 25 steps |
+| 1–256 steps | 257 steps |
 | Ids match the id pattern | `"my step"`, `"../etc"` |
 
 Cycle detection uses an iterative colouring DFS, so a deep graph cannot exhaust
@@ -125,23 +139,34 @@ resend it; a model told `steps[2].title: too long` fixes it.
 ## The step state machine
 
 ```
-                  ┌──────────────────────────────┐
-                  ▼                              │
-   pending ──► running ──► succeeded  (terminal) │
-      │           │                              │
-      │           ├──► failed ───────────────────┤  retry in place
-      │           └──► skipped ──────────────────┘
-      │                  ▲
-      └──────────────────┘
+                  ┌────────────────────────────────────────┐
+                  ▼                                        │
+   pending ─► ready ─► running ──► succeeded  (terminal)   │
+      │                  │                                 │
+      │                  ├──► waiting_approval ─► running ─┤
+      │                  ├──► failed ──────────────────────┤  retry in place
+      │                  ├──► skipped ─────────────────────┤
+      │                  └──► cancelled ───────────────────┘
+      │                         ▲
+      └─────────────────────────┘
 ```
 
 | From | May go to |
 | --- | --- |
-| `pending` | `pending`, `running`, `succeeded`, `failed`, `skipped` |
-| `running` | `running`, `succeeded`, `failed`, `skipped` |
+| `pending` | any status — a published plan starts here |
+| `ready` | `ready`, `running`, `skipped`, `cancelled` |
+| `running` | `running`, `waiting_approval`, `succeeded`, `failed`, `skipped`, `cancelled` |
+| `waiting_approval` | `waiting_approval`, `running`, `succeeded`, `failed`, `cancelled` |
 | `succeeded` | `succeeded` — **terminal** |
-| `failed` | `failed`, `running` — retry without a replan |
+| `failed` | `failed`, `running`, `cancelled` — retry without a replan |
 | `skipped` | `skipped`, `running` — revive |
+| `cancelled` | `cancelled`, `running` — revive |
+
+`ready` marks a step whose dependencies are satisfied but which has not been
+dispatched yet; it only becomes visible when a whole plan is in flight at once.
+`waiting_approval` is where a step sits while a person decides — either because
+its capability declared `requires_approval`, or because it failed under
+`on_failure: "require_approval"`.
 
 Two deliberate choices:
 
@@ -228,14 +253,144 @@ reality without the agent having to walk the graph.
 
 ---
 
+## Execution policy
+
+Three optional fields let a plan say how a step should be run, not just what it
+runs.
+
+### `retry`
+
+```jsonc
+{"retry": {"max_attempts": 3, "backoff_seconds": 2,
+           "backoff_multiplier": 2, "max_backoff_seconds": 60}}
+```
+
+Delays grow geometrically and are capped: 2s, 4s, 8s… never past
+`max_backoff_seconds`. Retries only happen for failures the runner marked
+retryable (`NodeResult.retry(...)`); a `NodeResult.fail(...)` is final regardless
+of budget, because re-running something that cannot work wastes the budget and
+delays the replan that would actually help.
+
+**Omitting `retry` inherits the capability's own policy.** This matters: a
+capability declared with `max_attempts=3` keeps all three even when the plan says
+nothing. Only an explicitly non-default `retry` block overrides it.
+
+### `timeout_seconds`
+
+A ceiling on one *attempt*, not the whole step. A timeout is treated as a
+retryable failure, so a step with budget left will try again.
+
+### `on_failure`
+
+| Value | Effect |
+| --- | --- |
+| `stop` (default) | Everything downstream is skipped |
+| `continue` | Independent dependents run anyway; the failure stays recorded |
+| `require_approval` | Instead of failing, the step parks for a human decision |
+
+`continue` is for the branch whose emptiness is itself a result — an exploratory
+analysis that finds no signal has still told you something, and the report step
+downstream should still run and say so. A run whose only failures are tolerated
+ones finishes `succeeded`; the failures remain in `failed_nodes` marked
+`tolerated: true`, so nothing is hidden.
+
+```python
+run = await broker.dispatch("execute_plan", {})
+[row for row in run.result["failed_nodes"] if row["tolerated"]]
+# [{"node_id": "exploratory", "error": "no signal", "tolerated": True, ...}]
+```
+
+---
+
+## Objectives and coverage
+
+An investigative plan can declare the questions it exists to answer, and must
+then account for each of them.
+
+```jsonc
+{
+  "objectives": [
+    {
+      "id": "q1",                                  // step-id pattern
+      "question": "Which loci associate with yield?",
+      "estimand": "per-allele effect",             // optional
+      "independent_unit": "plot",                  // optional but valuable
+      "expected_outputs": ["effect table"],        // optional, ≤12
+      "method_families": ["mixed model"],          // optional, ≤12
+      "validation_requirements": ["λ near 1.0"]    // optional, ≤12
+    }
+  ],
+  "analysis_coverage": [
+    {
+      "objective_id": "q1",
+      "status": "executed",   // planned|executed|not_estimable|blocked|deferred_by_scope
+      "reason": "structure-aware scan, λ = 0.95",
+      "selected_method": "mixed linear model",
+      "step_ids": ["scan"],
+      "artifact_refs": ["artifact:art-9f3c"],
+      "next_action": null
+    }
+  ]
+}
+```
+
+### The rules
+
+| Rule | Why |
+| --- | --- |
+| Objective ids are unique, and so are coverage `objective_id`s | One verdict per question |
+| Coverage may only reference declared objectives | No orphan verdicts |
+| Every objective needs exactly one coverage entry | No question left unaccounted for |
+| `executed` requires `step_ids` **or** `artifact_refs` | "Answered" must point at something |
+| `not_estimable`/`blocked`/`deferred_by_scope` require `next_action` | An unanswered question leaves a thread |
+| `step_ids` must name real steps | Evidence must exist |
+| `analysis_profile` requires at least one objective | A label with nothing under it means nothing |
+| A revision may not drop an objective | See below |
+
+### Objectives survive replanning
+
+```python
+validate_plan(
+    {"goal": "g", "revision": 2, "reason": "narrowing", "steps": [...]},   # no objectives
+    current=plan_with_q1_and_q2,
+)
+# PlanValidationError: a revised plan cannot drop declared objectives: q2 —
+# mark them not_estimable or deferred_by_scope instead
+```
+
+This is the rule the rest of the ledger exists to support. Without it, the
+cheapest way to complete an investigation is to stop asking about whatever did
+not work. With it, the only exits are an answer with evidence, or an explicit
+statement that the question could not be answered and what would change that.
+
+Reclassifying is always allowed:
+
+```python
+{"objective_id": "q2", "status": "not_estimable",
+ "reason": "the pedigree has no dam column, so the maternal component is not identifiable",
+ "next_action": "request a pedigree export including dam ids"}
+```
+
+Read them back with:
+
+```python
+from loomcraft import parse_plan
+
+plan = parse_plan(session.current_plan())
+[(item.objective_id, item.next_action) for item in plan.unresolved_objectives]
+```
+
+---
+
 ## Replanning
 
 ### The rules
 
 1. `revision` must be **strictly greater** than the current one.
 2. A revision replacing an existing plan must carry a non-empty `reason`.
-3. You cannot replace a plan while any step is `running`.
-4. Old revisions are retained in `session.plan_history()`.
+3. You cannot replace a plan while any step is `running` or `waiting_approval`.
+4. A revision may not drop a declared objective — only reclassify it.
+5. Old revisions are retained in `session.plan_history()`.
 
 ```python
 await broker.dispatch("publish_plan", {"plan": {
@@ -347,8 +502,15 @@ can read.
 and `step2` — the ids appear in tool calls, events, node badges, and error
 messages.
 
-**Bound the plan.** 24 steps is the ceiling, but a plan approaching it usually
-wants a workflow for the fixed parts.
+**Bound the plan.** The contract accepts 256 steps, but 24 is the size a
+reviewer can read at a glance, and a plan approaching even that usually wants a
+workflow for the fixed parts. Size the plan for the person who has to check it,
+not for the scheduler.
+
+**Say what you are trying to find out.** For investigative work, declare
+`objectives` before you plan the steps. It costs a few lines and it is what
+makes the difference between a run that produced output and a run whose output
+can be traced back to a question someone asked.
 
 ---
 

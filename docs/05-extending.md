@@ -52,6 +52,7 @@ async def summarise(ctx: NodeContext) -> NodeResult:
 | `ctx.config` | Fixed, non-model-writable runner configuration |
 | `ctx.workdir` | Private per-attempt scratch directory |
 | `ctx.attempt` | 1 on the first try, 2 on the first retry, … |
+| `ctx.dependencies` | Each upstream node's `detail`, keyed by node id |
 | `ctx.log(msg, level)` | Streamed when the engine has `stream_logs=True` |
 | `ctx.progress(fraction, msg)` | Streamed as `execution_progress` |
 | `ctx.emit(port, filename, data)` | Write bytes as an artifact |
@@ -60,6 +61,34 @@ async def summarise(ctx: NodeContext) -> NodeResult:
 
 The context deliberately cannot reach the plan or other nodes. A runner reads its
 inputs, writes artifacts, and returns; the engine assigns status.
+`ctx.dependencies` is the one narrow exception: upstream *files* arrive through
+`ctx.inputs`, and this carries the small structured facts alongside them — a
+threshold that was chosen, a λ that was computed.
+
+### The artifact contract
+
+Two rules, both enforced:
+
+- **The port must be one the capability declared.** Downstream nodes bind inputs
+  by port name, so an artifact on an undeclared port is an edge nobody agreed to.
+- **The filename stays inside `ctx.workdir`.** Runners routinely build filenames
+  from data — a table name, a chromosome id — and anything derived from input
+  must not be able to steer the write elsewhere. `../` and absolute paths are
+  rejected.
+
+Emitted files are **promoted, not streamed**: the engine holds them until the
+attempt succeeds (or parks for approval), then registers them. A retry that
+wrote a partial file before discovering a transient failure leaves nothing
+behind — those bytes never become a deliverable and never reach a downstream
+node.
+
+```python
+async def profile(ctx: NodeContext) -> NodeResult:
+    ctx.emit("profile", "summary.json", data)   # buffered
+    if not looks_right(data):
+        return NodeResult.retry("upstream truncated the file")
+    return NodeResult.ok()                       # ← now summary.json is registered
+```
 
 ### Choosing a result
 
@@ -68,7 +97,16 @@ NodeResult.ok(rows=120)                    # succeeded
 NodeResult.fail("no header row")           # permanent — do NOT retry
 NodeResult.retry("upstream returned 503")  # transient — retry if budget remains
 NodeResult.needs_approval("about to send") # park for a human
+NodeResult.skip("already clean")           # intentionally not done — not a failure
 ```
+
+`skip` is for the runner that discovers its work is unnecessary. Saying so is
+better than fabricating a success or raising: the step reads `skipped`, and a
+reader can tell "we decided not to" from "it broke".
+
+Whatever you return, `detail` must be JSON-serializable and under 256 KiB — it
+is echoed into the model's context and persisted in the event log. Put anything
+larger in an artifact.
 
 Getting `fail` vs `retry` right matters more than it looks. A malformed input is
 `fail` — re-running it cannot help, and retrying wastes the budget while delaying
@@ -339,17 +377,15 @@ For work that outlives a turn, have the runner poll an external job and return
 
 ## Human-in-the-loop
 
-Declare `requires_approval=True` and return early **before the side effect**:
+Declare `requires_approval=True` on the capability. The engine parks the node
+**before invoking your runner**, so the decision precedes the side effect:
 
 ```python
 PUBLISH = Capability(id="report.publish", ..., requires_approval=True)
 
 @registry.capability_runner(PUBLISH)
 async def publish(ctx: NodeContext) -> NodeResult:
-    if ctx.attempt == 1 and not ctx.config.get("approved"):
-        return NodeResult.needs_approval(
-            f"about to publish {ctx.input('report').filename} to the shared space"
-        )
+    # Only reached after a person approved. No guard needed.
     do_the_irreversible_thing()
     return NodeResult.ok()
 ```
@@ -360,11 +396,71 @@ The run parks in `paused_approval` and emits `approval_required`. Resolve it:
 run.approve("execute", True)     # or False to reject
 ```
 
-Rejection fails the node and skips everything downstream, which is usually what
-you want — the plan reflects that the outcome did not happen.
+On approval the node is released back to the scheduler with
+`ctx.config["approved"] = True` set, in case the runner wants to log or vary
+behaviour. On rejection the node fails and everything downstream is skipped,
+which is usually what you want — the plan then reflects that the outcome did not
+happen.
 
 Gate on **reversibility**, not importance: outward-facing sends, deletions,
 production writes, anything with a cost.
+
+### Asking mid-run
+
+A runner can also request approval part-way through, once it knows something it
+could not know beforehand:
+
+```python
+async def migrate(ctx: NodeContext) -> NodeResult:
+    plan = compute_migration(ctx.input("schema"))
+    if plan.drops_columns:
+        return NodeResult.needs_approval(f"this will drop {plan.dropped}")
+    apply(plan)
+    return NodeResult.ok()
+```
+
+The difference matters: `requires_approval` authorises *the action*, while
+`needs_approval` confirms *a finding*. Approving the second marks the node
+succeeded; it does not re-run the runner.
+
+### Waiting for a paused run
+
+`Run.wait()` completes only for terminal runs, so awaiting it through an
+approval gate would deadlock the caller that is meant to resolve it. Use
+`Run.settled()`, which returns at a terminal status *or* a pause:
+
+```python
+run = engine.submit(graph)
+await run.settled()
+if run.status == "paused_approval":
+    ...  # collect a decision, then approve
+```
+
+`Engine.execute()` and `execute_plan` already use `settled()`.
+
+---
+
+## Handlers for agent-owned steps
+
+`dynamic`, `review` and `answer` steps have no registered capability by
+definition, so `execute_plan` needs to be told how to run them:
+
+```python
+async def run_dynamic(ctx: NodeContext) -> NodeResult:
+    step_id = ctx.config["plan_step"]
+    result = await my_sandbox.run(step_id)
+    return NodeResult.ok(summary=result.summary)
+
+registry.register_step_handler("dynamic", run_dynamic)
+```
+
+Without a handler, `execute_plan` refuses a `dynamic` step with a message saying
+so — it will not invent a result. Defaults exist for the other two: an `answer`
+step returns its own description, and an unbound `review` step requires human
+approval, on the grounds that nothing verifies itself.
+
+Hosts that only ever drive steps one at a time through `run_capability` never
+need this.
 
 ---
 

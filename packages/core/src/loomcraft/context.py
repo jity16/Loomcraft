@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal, Mapping, Protocol, Sequence
 
 LogLevel = Literal["debug", "info", "warn", "error", "success"]
-NodeOutcome = Literal["succeeded", "failed", "waiting_approval"]
+NodeOutcome = Literal["succeeded", "failed", "waiting_approval", "skipped"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +57,16 @@ class NodeResult:
         return NodeResult(
             status="waiting_approval", error=message or None, detail=detail
         )
+
+    @staticmethod
+    def skip(message: str = "", **detail: Any) -> "NodeResult":
+        """Decline to do the work, without that counting as a failure.
+
+        A runner that discovers its work is unnecessary — the input is already
+        clean, the branch does not apply to this dataset — should say so rather
+        than fabricate a success or raise.
+        """
+        return NodeResult(status="skipped", error=message or None, detail=detail)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,10 +121,12 @@ class NodeContext:
         parameters: Mapping[str, Any],
         config: Mapping[str, Any],
         workdir: Path,
+        dependencies: Mapping[str, Any] | None = None,
         outputs: Sequence[str] = (),
         on_log: Callable[[str, LogLevel, str], None] | None = None,
         on_progress: Callable[[str, float, str], None] | None = None,
         on_artifact: Callable[[EmittedArtifact], None] | None = None,
+        on_adopted_artifact: Callable[[Mapping[str, Any]], None] | None = None,
         cancel_event: asyncio.Event | None = None,
     ) -> None:
         self.run_id = run_id
@@ -122,6 +134,10 @@ class NodeContext:
         #: 1 on the first try, 2 on the first retry, and so on.
         self.attempt = attempt
         self.inputs = dict(inputs)
+        #: Structured ``detail`` returned by each upstream node, keyed by node
+        #: id. Files arrive through ``inputs``; this is for the small facts a
+        #: step wants to pass on — a chosen threshold, a computed λ.
+        self.dependencies = dict(dependencies or {})
         self.parameters = dict(parameters)
         self.config = dict(config)
         #: A private scratch directory for this node. Deleted with the run.
@@ -130,6 +146,7 @@ class NodeContext:
         self._on_log = on_log
         self._on_progress = on_progress
         self._on_artifact = on_artifact
+        self._on_adopted_artifact = on_adopted_artifact
         self._cancel = cancel_event or asyncio.Event()
         self.workdir.mkdir(parents=True, exist_ok=True)
 
@@ -174,8 +191,15 @@ class NodeContext:
         content_type: str | None = None,
     ) -> EmittedArtifact:
         """Write bytes as a durable artifact bound to one declared output port."""
+        self._validate_port(port_name)
+        relative = Path(filename)
+        if relative.is_absolute() or ".." in relative.parts or not relative.name:
+            # Runners routinely build filenames from data — a table name, a
+            # chromosome id. Anything derived from input must not be able to
+            # steer the write out of this node's private workdir.
+            raise ValueError("artifact filename must stay inside the node workdir")
         payload = data.encode("utf-8") if isinstance(data, str) else data
-        target = self.workdir / filename
+        target = self.workdir / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
         return self.emit_path(port_name, target, content_type=content_type)
@@ -188,6 +212,7 @@ class NodeContext:
         content_type: str | None = None,
     ) -> EmittedArtifact:
         """Register an already-written file as an artifact."""
+        self._validate_port(port_name)
         source = Path(path)
         if not source.is_file():
             raise FileNotFoundError(f"artifact source is not a file: {source}")
@@ -210,6 +235,30 @@ class NodeContext:
         if self._on_artifact is not None:
             self._on_artifact(artifact)
         return artifact
+
+    def _validate_port(self, port_name: str) -> None:
+        """Keep artifacts inside the contract the capability advertised.
+
+        Downstream nodes bind inputs by port name, so an artifact on an
+        undeclared port is an edge nobody agreed to.
+        """
+        if not isinstance(port_name, str) or not port_name:
+            raise ValueError("artifact port_name must be a non-empty string")
+        if self.output_ports and port_name not in self.output_ports:
+            raise ValueError(
+                f"artifact port {port_name!r} is not declared by this node; "
+                f"declared ports are: {', '.join(self.output_ports)}"
+            )
+
+    def adopt_artifact(self, record: Mapping[str, Any]) -> None:
+        """Claim an already-registered artifact as this node's output.
+
+        Used by composite runners that delegate to a nested run: the inner run
+        already registered the files, and re-registering would duplicate them.
+        """
+        if self._on_adopted_artifact is None:
+            raise RuntimeError("this node context cannot adopt registered artifacts")
+        self._on_adopted_artifact(dict(record))
 
     # ── Cancellation ────────────────────────────────────────────────────────
 

@@ -10,7 +10,7 @@
  * only representation is spatial is unusable with a screen reader.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { fitToViewport, layoutPlan, type LayoutOptions } from "../layout";
 import type { Plan, PlanStep, StepKind, StepStatus } from "../types";
@@ -47,10 +47,13 @@ const KIND_GLYPH: Record<StepKind, string> = {
 
 const STATUS_LABEL: Record<StepStatus, string> = {
   pending: "Pending",
+  ready: "Ready",
   running: "Running",
+  waiting_approval: "Waiting for approval",
   succeeded: "Succeeded",
   failed: "Failed",
   skipped: "Skipped",
+  cancelled: "Cancelled",
 };
 
 const MIN_ZOOM = 0.3;
@@ -116,6 +119,10 @@ export function PlanGraph({
   controls = true,
 }: PlanGraphProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // SVG marker ids are document-global. Two graphs on one page (a revision
+  // comparison, a dashboard) would otherwise share one set of arrowheads and
+  // the second mount would silently repoint the first.
+  const markerPrefix = `lc-arrow-${useId().replace(/:/g, "")}`;
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [transform, setTransform] = useState({ scale: 1, translateX: 0, translateY: 0 });
   const [userMoved, setUserMoved] = useState(false);
@@ -294,7 +301,7 @@ export function PlanGraph({
               {["idle", "active", "done"].map((tone) => (
                 <marker
                   key={tone}
-                  id={`lc-arrow-${tone}`}
+                  id={`${markerPrefix}-${tone}`}
                   viewBox="0 0 10 10"
                   refX="9"
                   refY="5"
@@ -328,7 +335,7 @@ export function PlanGraph({
                     `lc-edge--${tone}`,
                     edge.long && "lc-edge--long",
                   )}
-                  markerEnd={`url(#lc-arrow-${tone})`}
+                  markerEnd={`url(#${markerPrefix}-${tone})`}
                 />
               );
             })}

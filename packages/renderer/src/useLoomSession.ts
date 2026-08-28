@@ -236,11 +236,15 @@ export function useLoomSession(options: UseLoomSessionOptions): UseLoomSession {
       if (!sessionId) return;
       try {
         await client.approveNode(sessionId, runId, nodeId, approved);
+        // The model turn ended at the gate, so there is no live POST stream to
+        // carry the resumed run's events. Re-read the durable history once the
+        // approval endpoint returns at the next gate or terminal state.
+        await refresh();
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
       }
     },
-    [client, sessionId],
+    [client, refresh, sessionId],
   );
 
   const download = useCallback(

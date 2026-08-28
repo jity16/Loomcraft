@@ -9,7 +9,26 @@
 
 export type StepKind = "answer" | "capability" | "workflow" | "dynamic" | "review";
 
-export type StepStatus = "pending" | "running" | "succeeded" | "failed" | "skipped";
+export type StepStatus =
+  | "pending"
+  | "ready"
+  | "running"
+  | "waiting_approval"
+  | "succeeded"
+  | "failed"
+  | "skipped"
+  | "cancelled";
+
+/** How a step's failure affects the rest of the graph. */
+export type FailurePolicy = "stop" | "continue" | "require_approval";
+
+/** How a declared objective ended up. */
+export type CoverageStatus =
+  | "planned"
+  | "executed"
+  | "not_estimable"
+  | "blocked"
+  | "deferred_by_scope";
 
 /** What the workbench is doing right now, derived from plan + busy state. */
 export type TaskPhase = "idle" | "orienting" | "planned" | "executing" | "completed";
@@ -24,6 +43,40 @@ export interface PlanStep {
   status: StepStatus;
   summary: string | null;
   execution: Record<string, unknown> | null;
+  /** Attempts the server has actually made, including the current one. */
+  attempts?: number;
+  retry?: {
+    max_attempts: number;
+    backoff_seconds?: number;
+    backoff_multiplier?: number;
+    max_backoff_seconds?: number;
+  };
+  timeout_seconds?: number | null;
+  on_failure?: FailurePolicy;
+  metadata?: Record<string, unknown>;
+}
+
+/** One question the run is meant to answer. */
+export interface AnalysisObjective {
+  id: string;
+  question: string;
+  status?: CoverageStatus | null;
+  estimand?: string;
+  independent_unit?: string;
+  expected_outputs?: string[];
+  method_families?: string[];
+  validation_requirements?: string[];
+}
+
+/** The evidence that discharges one objective — or why it could not be. */
+export interface AnalysisCoverage {
+  objective_id: string;
+  status: CoverageStatus;
+  reason: string;
+  selected_method?: string | null;
+  step_ids?: string[];
+  artifact_refs?: string[];
+  next_action?: string | null;
 }
 
 export interface Plan {
@@ -32,6 +85,10 @@ export interface Plan {
   revision: number;
   reason: string | null;
   steps: PlanStep[];
+  analysis_profile?: string | null;
+  objectives?: AnalysisObjective[];
+  analysis_coverage?: AnalysisCoverage[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface Artifact {
@@ -50,7 +107,8 @@ export interface Artifact {
 
 export interface Execution {
   id: string | null;
-  kind: "capability" | "workflow";
+  /** `plan` is a whole-plan run started by `execute_plan`. */
+  kind: "capability" | "workflow" | "plan";
   capability: string;
   status: string;
   step_id?: string;
@@ -60,6 +118,9 @@ export interface Execution {
   artifacts: Artifact[];
   /** Per-node progress within this execution, keyed by node id. */
   nodes?: Record<string, NodeProgress>;
+  /** Plan revision this run executed, for `plan` executions. */
+  revision?: number;
+  attempts?: number;
 }
 
 export interface NodeProgress {
@@ -129,7 +190,7 @@ export type TimelineItem =
   | {
       kind: "execution";
       id: string;
-      executionKind: "capability" | "workflow";
+      executionKind: "capability" | "workflow" | "plan";
       executionId: string | null;
       stepId?: string;
       at?: string;

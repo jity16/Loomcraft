@@ -4,7 +4,7 @@ How a model drives LoomCraft: the tool surface, the loop, provider adapters,
 prompting, and the guardrails you get for free.
 
 - [The tool surface](#the-tool-surface)
-- [The ten tools](#the-ten-tools)
+- [The eleven tools](#the-eleven-tools)
 - [Provider dialects](#provider-dialects)
 - [The loop](#the-loop)
 - [Using Claude](#using-claude)
@@ -43,7 +43,7 @@ tool_specs(include_workflows=False,     # no workflows registered
 
 ---
 
-## The ten tools
+## The eleven tools
 
 ### Read-only
 
@@ -62,11 +62,44 @@ gathering evidence is always safe.
 | Tool | Purpose |
 | --- | --- |
 | `publish_plan` | Validate and publish a versioned DAG. Required before any execution. |
-| `update_step` | Report status for an `answer`/`dynamic`/`review` step the agent did itself. |
+| `update_step` | Report status for an `answer`/`dynamic`/unbound `review` step the agent did itself. |
 | `request_inputs` | Publish typed file slots and end the turn. |
 | `run_capability` | Run one registered capability, authorised by a matching plan step. |
 | `run_workflow` | Run one registered workflow, likewise. |
+| `execute_plan` | Run the whole published plan in one scheduled, audited run. |
 | `register_artifacts` | Promote 1–12 scratch files to session deliverables, atomically. |
+
+### Step at a time, or the whole graph
+
+`run_capability` and `execute_plan` are two ways to get through the same plan,
+and they are good at different things.
+
+| | `run_capability` | `execute_plan` |
+| --- | --- | --- |
+| Who decides what runs next | the model, between turns | the scheduler, from the DAG |
+| Concurrency | one execution at a time | every independent branch at once |
+| Cost | one model turn per step | one call for the whole plan |
+| Good for | steps where the *next* decision depends on this result | a plan that is already settled |
+
+Use `run_capability` while the agent is still reasoning — the λ = 2.80 moment in
+the GWAS example only happens because the agent read one step's artifact before
+choosing the next. Use `execute_plan` once the graph is decided and the point is
+throughput:
+
+```python
+await broker.dispatch("execute_plan", {
+    # Optional per-step bindings. Steps fed by an upstream step need no entry.
+    "inputs": {"qc": {"inputs": {"table": "upload:abc"},
+                      "parameters": {"maf": 0.01}}},
+    "timeout_seconds": 3600,   # the whole plan, not one step
+})
+```
+
+The result is one execution record with per-node state. It returns when the run
+finishes *or* parks at an approval gate — check `result["status"]` rather than
+assuming completion. Steps of kind `dynamic`, `review` and `answer` need a host
+handler to run this way; see
+[Extending](05-extending.md#handlers-for-agent-owned-steps).
 
 ### The shape of a call
 
@@ -199,6 +232,83 @@ result = await agent.run_turn(broker, "Assess the uploaded table.")
 ```
 
 Same broker, same validation, same events. The loop differs only in wire format.
+
+Pass `stream=True` to emit `message_delta` events as tokens arrive. Tool-call
+arguments stream as fragments keyed only by index; the agent reassembles them
+before parsing, so a call split mid-JSON is not lost.
+
+---
+
+## Using a model runner in another process
+
+When the model is reachable as a *command* rather than a Python client — a local
+inference wrapper, a vendor CLI, an internal gateway — `SubprocessAgent` speaks
+JSONL over stdio:
+
+```python
+from loomcraft import SubprocessAgent
+
+agent = SubprocessAgent(["my-runner", "--serve"], timeout_seconds=600)
+result = await agent.run_turn(broker, "Assess the uploaded table.")
+```
+
+LoomCraft writes one request line and reads reply lines:
+
+```jsonc
+// written to the runner's stdin
+{"type": "request", "messages": [...], "tools": [...]}
+
+// read from its stdout, one object per line
+{"type": "delta",     "text": "partial text"}
+{"type": "tool_call", "id": "c1", "name": "publish_plan", "arguments": {...}}
+{"type": "done",      "text": "final text", "stop_reason": "end_turn"}
+{"type": "error",     "message": "no model configured"}
+```
+
+A line that is not valid JSON is skipped rather than failing the turn, so a
+runner that prints a startup banner does not take the session down. A non-zero
+exit with nothing useful produced becomes a turn error carrying the tail of
+stderr.
+
+---
+
+## Using Codex or another app-server host
+
+Some runtimes own their own process and call *back* for tools. `AppServerBridge`
+translates that JSON-RPC traffic into broker calls:
+
+```python
+from loomcraft import AppServerBridge, dynamic_tool_specs
+
+bridge = AppServerBridge(broker)
+
+# 1. Advertise the catalog when the turn starts.
+tools = dynamic_tool_specs()
+
+# 2. Route every inbound message through the bridge.
+reply = await bridge.handle(message)
+
+# 3. Write `reply` back on the same channel. An empty dict means the message
+#    was a notification and takes no response.
+```
+
+Recognised methods:
+
+| Method | Effect |
+| --- | --- |
+| `initialize`, `session/initialize` | Protocol handshake |
+| `tools/list`, `item/tool/list` | The same catalog as `dynamic_tool_specs()` |
+| `tools/call`, `item/tool/call` | `broker.dispatch`, returned as content + `structuredContent` |
+
+The bridge is deliberately transport-agnostic — it does not open the subprocess
+or the socket, because process supervision, restarts and cancellation belong to
+the host. What it guarantees is that a tool call arriving this way is authorised
+against the published plan exactly like one from an in-process loop. There is no
+second validation path to keep in sync.
+
+A rejected call comes back as `isError: true` with the broker's stable error
+code, not as a JSON-RPC error — the model should see and recover from it, the
+same way it would in-process.
 
 ---
 
@@ -414,6 +524,7 @@ cancelled run leaves nothing writing behind it.
 | `BROKER_ACTION_LIMIT_EXCEEDED` | Per-turn call budget exhausted |
 | `BROKER_ACTION_REPEATED` | Identical call repeated without progress |
 | `BROKER_ACTION_UNSUPPORTED` | No such tool |
+| `BROKER_INVALID_ARGUMENT` | A payload was structurally wrong |
 | `BROKER_INTERNAL_ERROR` | Unexpected server-side failure |
 
 Next: [Frontend integration](04-frontend-integration.md).

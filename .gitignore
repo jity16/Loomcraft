@@ -22,6 +22,18 @@ npm-debug.log*
 .loomcraft-data/
 **/sessions/
 
+# Development notes — working artifacts, not documentation. Only the public
+# docs/ set, the examples, and the READMEs are published. See CONTRIBUTING.md.
+notes/
+scratch/
+docs/internal/
+docs/plans/
+*.notes.md
+extraction-notes.md
+integration-comparison.md
+migration.md
+TODO.md
+
 # Editors / OS
 .DS_Store
 .idea/

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jity16/Loomcraft/schema/event.schema.json",
+  "title": "LoomCraft event",
+  "description": "One record from a session's append-only log. Generated from loomcraft 0.1.0; do not edit by hand.",
+  "type": "object",
+  "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Total order within the session; use it to resume."
+    },
+    "event": {
+      "type": "string",
+      "enum": [
+        "plan_published",
+        "step_updated",
+        "execution_started",
+        "execution_progress",
+        "execution_finished",
+        "run_timeout",
+        "node_log",
+        "artifact_registered",
+        "input_required",
+        "input_fulfilled",
+        "input_cancelled",
+        "input_invalidated",
+        "approval_required",
+        "approval_resolved",
+        "tool_call",
+        "tool_result",
+        "message",
+        "message_delta",
+        "notice",
+        "error",
+        "done"
+      ]
+    },
+    "data": {
+      "type": "object"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "seq",
+    "event",
+    "data",
+    "ts"
+  ],
+  "additionalProperties": false
+}

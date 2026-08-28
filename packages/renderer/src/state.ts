@@ -47,10 +47,13 @@ export const initialLoomState: LoomState = {
 const STEP_KINDS: StepKind[] = ["answer", "capability", "workflow", "dynamic", "review"];
 const STEP_STATUSES: StepStatus[] = [
   "pending",
+  "ready",
   "running",
+  "waiting_approval",
   "succeeded",
   "failed",
   "skipped",
+  "cancelled",
 ];
 
 // ── Coercion helpers ────────────────────────────────────────────────────────
@@ -95,6 +98,18 @@ export function parsePlan(value: unknown): Plan | null {
       status: STEP_STATUSES.includes(status) ? status : "pending",
       summary: typeof step.summary === "string" ? step.summary : null,
       execution: Object.keys(record(step.execution)).length ? record(step.execution) : null,
+      attempts: num(step.attempts),
+      retry: Object.keys(record(step.retry)).length
+        ? (record(step.retry) as PlanStep["retry"])
+        : undefined,
+      timeout_seconds: num(step.timeout_seconds) ?? null,
+      on_failure:
+        step.on_failure === "continue" || step.on_failure === "require_approval"
+          ? step.on_failure
+          : "stop",
+      metadata: Object.keys(record(step.metadata)).length
+        ? record(step.metadata)
+        : undefined,
     });
   }
   if (!steps.length) return null;
@@ -105,6 +120,14 @@ export function parsePlan(value: unknown): Plan | null {
     revision: row.revision,
     reason: typeof row.reason === "string" ? row.reason : null,
     steps,
+    analysis_profile:
+      typeof row.analysis_profile === "string" ? row.analysis_profile : null,
+    objectives: Array.isArray(row.objectives)
+      ? (row.objectives as Plan["objectives"])
+      : [],
+    analysis_coverage: Array.isArray(row.analysis_coverage)
+      ? (row.analysis_coverage as Plan["analysis_coverage"])
+      : [],
   };
 }
 
@@ -181,7 +204,30 @@ function parseExecution(
 ): Execution | null {
   const row = { ...fallback, ...record(value) };
   const kind = text(row.kind || row.execution_kind);
-  if (kind !== "capability" && kind !== "workflow") return null;
+  if (kind !== "capability" && kind !== "workflow" && kind !== "plan") return null;
+
+  // A run's serialized form carries its per-node state. Reading it here is what
+  // lets a page reload show a plan run mid-flight rather than as a blank box.
+  const nodes: Record<string, NodeProgress> = {};
+  for (const [nodeId, entry] of Object.entries(record(row.nodes))) {
+    if (typeof entry === "string") {
+      nodes[nodeId] = { node_id: nodeId, status: entry };
+      continue;
+    }
+    const node = record(entry);
+    nodes[nodeId] = {
+      node_id: text(node.node_id) || nodeId,
+      status: text(node.status) || "pending",
+      attempt: num(node.attempt) ?? num(node.attempts),
+      max_attempts: num(node.max_attempts),
+      fraction: num(node.fraction),
+      message: text(node.message) || undefined,
+      error: typeof node.error === "string" ? node.error : null,
+      retry_in_seconds: num(node.retry_in_seconds),
+      duration_seconds: num(node.duration_seconds),
+    };
+  }
+
   return {
     id:
       typeof row.id === "string"
@@ -201,7 +247,9 @@ function parseExecution(
         )
       : [],
     artifacts: parseArtifacts(row.artifacts),
-    nodes: undefined,
+    nodes: Object.keys(nodes).length ? nodes : undefined,
+    revision: num(row.revision),
+    attempts: num(row.attempts),
   };
 }
 
@@ -209,9 +257,13 @@ function parseExecution(
 
 function withPlan(state: LoomState, plan: Plan): LoomState {
   const exists = state.plans.some((item) => item.revision === plan.revision);
+  // History replay can deliver an older revision after a newer one. Recording
+  // it in `plans` is right; making it current again is not — the switcher would
+  // jump backwards under the reader.
+  const isCurrent = state.currentPlan === null || plan.revision >= state.currentPlan.revision;
   return {
     ...state,
-    currentPlan: plan,
+    currentPlan: isCurrent ? plan : state.currentPlan,
     plans: exists
       ? state.plans.map((item) => (item.revision === plan.revision ? plan : item))
       : [...state.plans, plan].sort((a, b) => a.revision - b.revision),
@@ -294,6 +346,16 @@ export function appendUserMessage(state: LoomState, message: string): LoomState 
 
 /** Fold one event into state. Pure; never throws on malformed input. */
 export function reduceLoomEvent(state: LoomState, incoming: LoomEvent): LoomState {
+  // An SSE reconnect replays the backlog, which can overlap what the live
+  // stream already delivered. Sequence numbers are the server's total order,
+  // so anything at or below the watermark has already been folded in.
+  if (
+    typeof incoming.seq === "number" &&
+    incoming.seq > 0 &&
+    incoming.seq <= state.lastSeq
+  ) {
+    return state;
+  }
   const data = record(incoming.data);
   const at = incoming.ts;
   const seq = typeof incoming.seq === "number" && incoming.seq > 0 ? incoming.seq : state.lastSeq;

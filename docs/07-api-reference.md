@@ -22,26 +22,39 @@ from loomcraft.plan import ensure_dependencies_succeeded, ensure_step_startable,
 
 | Symbol | Signature / value |
 | --- | --- |
-| `Plan` | Pydantic model: `goal`, `summary`, `revision`, `reason`, `steps` |
+| `Plan` | Pydantic model: `goal`, `summary`, `revision`, `reason`, `steps`, `objectives`, `analysis_coverage`, `analysis_profile`, `metadata` |
 | `Plan.adjacency` | `dict[str, list[str]]` |
 | `Plan.by_id` | `dict[str, PlanStep]` |
 | `Plan.layers` | `list[list[str]]` — each inner list may run concurrently |
 | `Plan.step(id)` | `PlanStep`; raises `UnknownStepError` |
-| `Plan.ready_steps()` | Pending steps whose dependencies all succeeded |
-| `Plan.blocked_steps()` | Pending steps with a failed/skipped upstream |
+| `Plan.ready_steps()` | Steps that could start now (dependencies satisfied) |
+| `Plan.blocked_steps()` | Pending steps held up by an unsatisfied upstream |
 | `Plan.is_complete` | All steps terminal |
 | `Plan.progress` | `{'pending': n, …, 'total': n}` |
-| `PlanStep` | `id`, `title`, `kind`, `depends_on`, `capability`, `description`, `status`, `summary`, `execution` |
+| `Plan.coverage_by_objective` | `dict[str, AnalysisCoverage]` |
+| `Plan.unresolved_objectives` | Coverage entries that ended without an answer |
+| `Plan.to_json(*, indent=2)` | Serialized plan |
+| `PlanStep` | `id`, `title`, `kind`, `depends_on`, `capability`, `description`, `retry`, `timeout_seconds`, `on_failure`, `metadata`, `status`, `summary`, `execution`, `attempts` |
+| `PlanStep.is_agent_reportable` | False for a `review` bound to a capability |
+| `RetryPolicy` | `max_attempts`, `backoff_seconds`, `backoff_multiplier`, `max_backoff_seconds` |
+| `RetryPolicy.delay_for(n)` | Seconds to wait after attempt `n` failed |
+| `RetryPolicy.is_default` | Whether anything was actually requested |
+| `AnalysisObjective` | `id`, `question`, `status`, `estimand`, `independent_unit`, `expected_outputs`, `method_families`, `validation_requirements` |
+| `AnalysisCoverage` | `objective_id`, `status`, `reason`, `selected_method`, `step_ids`, `artifact_refs`, `next_action` |
+| `AnalysisCoverage.is_evidenced` | Whether it cites a step or artifact |
 | `parse_plan(raw)` | `Plan`; raises `PlanValidationError` |
 | `validate_plan(raw, current=None, *, registry=None)` | Normalised dict with state reset |
 | `update_step(plan, id, status, *, summary=None, execution=None)` | New plan dict |
 | `get_step(plan, id)` | `dict` |
 | `propagate_skips(plan)` | New plan dict with downstream skipped |
+| `task_phase(plan, busy=False)` | `idle`/`orienting`/`planned`/`executing`/`completed` |
+| `diff_plans(previous, current)` | Added/removed/changed steps and objectives |
 | `ensure_dependencies_succeeded(plan, id)` | Raises `DependencyError` |
 | `ensure_step_startable(plan, id, *, kind, capability=None)` | Full precondition check |
 | `STEP_TRANSITIONS` | `{status: frozenset(allowed)}` |
 | `AGENT_REPORTABLE_KINDS` | `{"answer", "dynamic", "review"}` |
-| `MAX_STEPS` / `MAX_REVISION` | `24` / `100` |
+| `FAILURE_POLICIES` | `("stop", "continue", "require_approval")` |
+| `MAX_STEPS` / `RECOMMENDED_MAX_STEPS` / `MAX_REVISION` | `256` / `24` / `1000` |
 
 ---
 
@@ -84,6 +97,8 @@ from loomcraft import Registry, Capability, CapabilityInput, Parameter, Port, Wo
 | `register_capability(cap, *, replace=False)` | Register a contract |
 | `register_workflow(wf, *, replace=False)` | Register a composite DAG |
 | `capability_runner(cap, *, replace=False)` | Decorator registering both |
+| `register_step_handler(kind, fn, *, replace=False)` | How `execute_plan` runs `dynamic`/`review`/`answer` steps |
+| `step_handler(kind)` | The registered handler, or `None` |
 | `capability(id)` / `workflow(id)` / `runner(key)` | Look up; raises on miss |
 | `has_capability(id)` / `has_workflow(id)` / `has_runner(key)` | `bool` |
 | `capabilities` / `workflows` / `runners` | Copies of the maps |
@@ -142,36 +157,57 @@ fields as `Capability`.
 from loomcraft import Engine, ExecutionGraph, ExecutionNode, Run, NodeState, NodeContext, NodeResult, graph_from_capability, graph_from_workflow
 ```
 
-### `Engine(registry, session, *, max_parallel=8, emit=None, stream_logs=False)`
+### `Engine(registry, session, *, max_parallel=8, max_retained_runs=128, emit=None, stream_logs=False)`
 
 | Method | Purpose |
 | --- | --- |
 | `submit(graph, *, run_id=None)` | Start in the background; returns `Run` |
-| `execute(graph, *, run_id=None)` | Submit and await |
+| `execute(graph, *, run_id=None)` | Submit and await, returning at a terminal status **or** an approval pause |
 | `get(run_id)` | `Run \| None` |
 | `cancel(run_id)` / `cancel_all()` | Stop and await quiescence |
+
+Terminal runs are pruned once `max_retained_runs` is reached; live and paused
+handles are never pruned.
 
 ### `Run`
 
 `id`, `graph`, `status`, `nodes`, `error`, `cancelled`, `pending_approvals`,
-`duration_seconds`, `artifacts`, `failed_nodes`.
-Methods: `await wait()`, `await cancel()`, `approve(node_id, approved=True)`,
-`to_dict()`.
+`plan_step_id`, `duration_seconds`, `artifacts`, `failed_nodes`,
+`blocking_failures`.
+Methods: `await wait()`, `await settled()`, `await cancel()`,
+`approve(node_id, approved=True)`, `to_dict()`.
 
 `status`: `created` → `running` ⇄ `paused_approval` → `succeeded`/`failed`/`cancelled`.
 
+`wait()` completes only for terminal runs. **`settled()` also returns at an
+approval pause** — use it unless you are certain no gate can fire, because
+awaiting `wait()` through a gate deadlocks the caller that would resolve it.
+
+`failed_nodes` marks each entry `tolerated: true` when its node declared
+`on_failure="continue"`. `blocking_failures` is the untolerated subset, and it
+is what decides whether the run itself failed.
+
 ### `NodeContext`
 
-`run_id`, `node_id`, `attempt`, `inputs`, `parameters`, `config`, `workdir`,
-`output_ports`, `cancelled`.
+`run_id`, `node_id`, `attempt`, `inputs`, `dependencies`, `parameters`, `config`,
+`workdir`, `output_ports`, `cancelled`.
 Methods: `input(key)`, `input_list(key)`, `optional_input(key)`, `has_input(key)`,
 `log(msg, level)`, `progress(fraction, msg)`, `emit(port, filename, data, *, content_type=None)`,
-`emit_path(port, path, *, content_type=None)`, `raise_if_cancelled()`, `await wait_cancelled()`.
+`emit_path(port, path, *, content_type=None)`, `adopt_artifact(record)`,
+`raise_if_cancelled()`, `await wait_cancelled()`.
+
+`emit` and `emit_path` reject a port the node did not declare, and `emit`
+rejects a filename that would leave `workdir`. Emitted artifacts are registered
+only once the attempt succeeds or parks for approval.
 
 ### `NodeResult`
 
 `NodeResult.ok(**detail)` · `NodeResult.fail(msg, *, retryable=False, **detail)` ·
-`NodeResult.retry(msg, **detail)` · `NodeResult.needs_approval(msg, **detail)`.
+`NodeResult.retry(msg, **detail)` · `NodeResult.needs_approval(msg, **detail)` ·
+`NodeResult.skip(msg, **detail)`.
+
+`detail` must be JSON-serializable and under `MAX_RESULT_DETAIL_BYTES` (256 KiB);
+otherwise the node fails.
 
 ### Graph builders
 
@@ -180,8 +216,50 @@ graph_from_capability(capability, *, sources, parameters, graph_id=None) -> Exec
 graph_from_workflow(workflow, *, sources, parameters, graph_id=None) -> ExecutionGraph
 ```
 
-`ExecutionGraph`: `id`, `name`, `nodes`, `kind`, `source_id`, `adjacency`,
-`layers`, `node(id)`. Construction validates the DAG.
+`ExecutionGraph`: `id`, `name`, `nodes`, `kind` (`capability`/`workflow`/`plan`),
+`source_id`, `adjacency`, `layers`, `node(id)`. Construction validates the DAG.
+
+`ExecutionNode` additionally carries `retry_backoff_multiplier`,
+`retry_max_backoff_seconds`, `on_failure`, `runner_fn`, `input_ports` and
+`input_extensions`.
+
+---
+
+## Python: plan execution
+
+```python
+from loomcraft import PlanExecutor, build_plan_graph
+from loomcraft.plan_executor import resolve_retry
+```
+
+| Symbol | Signature |
+| --- | --- |
+| `PlanExecutor(registry, session, *, engine=None)` | Runs a whole plan |
+| `await PlanExecutor.execute(plan, *, inputs=None, run_id=None, timeout_seconds=None, on_submitted=None)` | Returns the settled `Run` |
+| `build_plan_graph(plan, registry, engine, *, inputs=None, graph_id=None)` | The `ExecutionGraph` a plan compiles to |
+| `resolve_retry(policy, *, attempts, backoff, multiplier=2.0, max_backoff=None)` | Plan policy over catalog defaults |
+
+`inputs` is keyed by step id: `{"qc": {"inputs": {...}, "parameters": {...}}}`.
+Steps fed by an upstream step need no entry. `timeout_seconds` bounds the whole
+plan; on expiry the run is cancelled and `run_timeout` is emitted.
+
+---
+
+## Python: app-server protocol
+
+```python
+from loomcraft import AppServerBridge, dynamic_tool_specs
+```
+
+| Symbol | Purpose |
+| --- | --- |
+| `AppServerBridge(broker, *, version="0.1.0")` | JSON-RPC → broker translation |
+| `await bridge.handle(message)` | Reply dict, or `{}` for a notification |
+| `dynamic_tool_specs(**kwargs)` | The catalog in app-server shape |
+| `PROTOCOL_VERSION` | `"loomcraft-v1"` |
+
+Handles `initialize`/`session/initialize`, `tools/list`/`item/tool/list`, and
+`tools/call`/`item/tool/call`.
 
 ---
 
@@ -212,6 +290,21 @@ from loomcraft import Session, SessionStore, ResolvedSource
 
 `ResolvedSource`: `source_ref`, `kind`, `path`, `filename`, `size`, `checksum`,
 `content_type`.
+
+`history()` is scrubbed for external consumption. The same helpers are public:
+
+| Function | Purpose |
+| --- | --- |
+| `public_artifact(record)` | Artifact metadata without `relpath` |
+| `public_execution(record)` | Execution record without paths, command lines or env |
+| `public_plan(plan)` | A plan whose per-step execution records are scrubbed |
+
+Use them for anything you serve yourself. Internally `list_artifacts()` still
+returns `relpath`, because the host needs it.
+
+Session ids must match `^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`. A malformed id is
+rejected rather than normalised, so two different ids can never collide on one
+directory.
 
 ---
 
@@ -287,9 +380,17 @@ from loomcraft import ToolBroker, BrokerLimits, ToolResponse
 | `awaiting_inputs` | Blocked on a file request |
 | `active_run` | `Run \| None` |
 | `await close()` | Cancel anything in flight |
+| `await dispatch_dynamic_tool(name, payload)` | `dispatch` returning a plain dict |
+| `await cancel_run(run_id)` | Cancel one run without ending the turn |
+| `await approve_run(run_id, node_id, *, approved=True, comment="")` | Resolve a gate; returns the execution record, or `None` if nothing was waiting |
 | `fulfill_input_request(request_id)` | Confirm the user's uploads |
 | `cancel_input_request(request_id)` | Decline a request |
 | `invalidate_requests_for_upload(upload_id)` | Re-open affected requests |
+
+`approve_run` returns once the run reaches a terminal status **or its next**
+gate — a graph may hold several, and waiting for all of them would hang the
+caller resolving them one at a time. `node_id` accepts a plan step id for a
+single-capability run.
 
 `BrokerLimits`: `max_actions_per_turn=64`, `max_identical_actions=3`,
 `max_inspect_bytes=16384`, `max_inspect_lines=40`, `search_limit=10`.
@@ -302,14 +403,23 @@ from loomcraft import ToolBroker, BrokerLimits, ToolResponse
 ## Python: agents
 
 ```python
-from loomcraft import AnthropicAgent, OpenAICompatibleAgent, ScriptedAgent, TurnResult, ToolCall, execute_tool_calls
+from loomcraft import AnthropicAgent, OpenAICompatibleAgent, SubprocessAgent, ScriptedAgent, TurnResult, ToolCall, execute_tool_calls
 ```
 
 ### `AnthropicAgent(*, client=None, model="claude-opus-5", system=SYSTEM_PROMPT, max_tokens=16000, effort="high", thinking=None, max_iterations=24, tools=None, extra_body=None)`
 
 `await run_turn(broker, message, *, history=None, on_event=None) -> TurnResult`
 
-### `OpenAICompatibleAgent(client, *, model, system=SYSTEM_PROMPT, max_iterations=24, tools=None, extra_body=None)`
+### `OpenAICompatibleAgent(client, *, model, system=SYSTEM_PROMPT, max_iterations=24, tools=None, extra_body=None, stream=False)`
+
+`stream=True` emits `message_delta` events and reassembles tool-call arguments
+that arrive split across chunks.
+
+### `SubprocessAgent(argv, *, system=SYSTEM_PROMPT, max_iterations=24, tools=None, dialect="openai", cwd=None, env=None, timeout_seconds=600.0)`
+
+Speaks JSONL over the child process's stdio. Request:
+`{"type": "request", "messages": [...], "tools": [...]}`. Replies:
+`{"type": "delta"|"tool_call"|"done"|"error", …}`. Non-JSON lines are skipped.
 
 ### `ScriptedAgent(script, *, final_text="")`
 
@@ -392,9 +502,14 @@ All derive from `LoomCraftError` with `.code` and `.public_message`.
 | `request_inputs` | `request` | — |
 | `run_capability` | `capability_id`, `step_id`, `inputs` | `parameters` |
 | `run_workflow` | `workflow_id`, `step_id`, `inputs` | `parameters` |
+| `execute_plan` | — | `inputs`, `timeout_seconds` |
 | `register_artifacts` | `step_id`, `artifacts` | — |
 
 Every response: `{ok, result?, error?, error_code?}`.
+
+`tool_specs(*, include_workflows=True, include_inspection=True,
+include_plan_execution=True, max_search_results=10)` builds the surface; drop
+what your deployment does not offer so the model never proposes it.
 
 ---
 
@@ -407,6 +522,7 @@ Every response: `{ok, result?, error?, error_code?}`.
 | `execution_started` | `{step_id, execution_kind, execution_id, capability, nodes}` |
 | `execution_progress` | `{execution_id, node_id, status, attempt?, max_attempts?, fraction?, message?, error?, retry_in_seconds?, duration_seconds?}` |
 | `execution_finished` | `{step_id, execution}` |
+| `run_timeout` | `{execution_id, timeout_seconds}` |
 | `node_log` | `{execution_id, node_id, level, message}` |
 | `artifact_registered` | `{artifact}` |
 | `input_required` | `{request}` |
@@ -422,6 +538,14 @@ Every response: `{ok, result?, error?, error_code?}`.
 | `done` | `{ok}` |
 
 `*` stream-only — not persisted, not replayable, `seq: -1`.
+
+A whole-plan run started by `execute_plan` uses `execution_kind: "plan"` and
+carries per-node state in `execution.nodes`. Each `step_updated` it emits
+projects one node's state onto the corresponding plan step.
+
+Consumers should ignore any event whose `seq` is at or below what they have
+already folded in: a reconnect replays the backlog, which can overlap the live
+stream. `reduceLoomEvent` does this for you.
 
 ---
 
@@ -444,7 +568,8 @@ Default prefix `/api/v1/loomcraft`.
 | `POST` | `/sessions/{id}/cancel` | — | `{cancelled}` |
 | `POST` | `/sessions/{id}/input-requests/{rid}/fulfill` | — | `{request_id, allocated}` |
 | `POST` | `/sessions/{id}/input-requests/{rid}/cancel` | — | `{request_id}` |
-| `POST` | `/sessions/{id}/executions/{rid}/approve` | `{node_id, approved}` | Confirmation |
+| `POST` | `/sessions/{id}/executions/{rid}/approve` | `{node_id, approved, comment}` | Confirmation + execution record |
+| `POST` | `/sessions/{id}/executions/{rid}/cancel` | — | `{run_id, cancelled}` |
 | `GET` | `/sessions/{id}/artifacts` | — | `{artifacts}` |
 | `GET` | `/sessions/{id}/artifacts/{aid}` | — | File download |
 | `GET` | `/healthz` | — | `{ok, problems, capabilities, workflows}` |

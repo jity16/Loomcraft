@@ -24,8 +24,9 @@ not narrated:
 * ``gwas.annotate`` calls a flaky external gene server and declares
   ``max_attempts=3``, which exercises **retry with exponential backoff**.
 * ``gwas.register_finding`` declares ``requires_approval=True``: registering a
-  locus as a claimed discovery is outward-facing and hard to retract, so the run
-  parks in ``waiting_approval`` until a human resolves it.
+  locus as a claimed discovery is outward-facing and hard to retract, so the
+  engine parks the node *before invoking the runner* and waits for a human. The
+  runner therefore contains no approval check of its own.
 * ``gwas.qc`` accepts either a PLINK-style ``.bed`` + ``.bim`` + ``.fam`` triple
   or a single ``.vcf``, which is what **input variants** are for — a real pair or
   a real VCF, never half of each.
@@ -982,14 +983,10 @@ REGISTER = Capability(
 
 @registry.capability_runner(REGISTER)
 async def register_finding(ctx: NodeContext) -> NodeResult:
-    # The engine parks the node here. Only after `run.approve(node_id, True)`
-    # does it count as succeeded — and the side effect is deliberately not
-    # performed before the gate, which is the whole point of returning early.
-    if ctx.attempt == 1 and not ctx.config.get("approved"):
-        return NodeResult.needs_approval(
-            f"about to register the locus in {ctx.input('summary').filename} "
-            "as a public finding"
-        )
+    # Because the capability declares `requires_approval=True`, the engine parks
+    # this node *before* calling us. Reaching this line means a person already
+    # said yes — `ctx.config["approved"]` is True — so there is no guard to
+    # write here. The gate is in front of the side effect, not around it.
     ctx.emit(
         "receipt",
         "register-receipt.json",

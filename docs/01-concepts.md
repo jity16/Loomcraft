@@ -43,7 +43,8 @@ Everything below follows from those three.
 
 A **plan** is a versioned DAG the agent publishes through the `publish_plan`
 tool. It carries a `goal`, an optional `summary`, a `revision`, an optional
-`reason`, and 1–24 steps.
+`reason`, and 1–256 steps — though 24 is the size a reviewer can actually read
+at a glance, and what the examples and the renderer are tuned for.
 
 ```python
 {
@@ -62,14 +63,19 @@ Each step has:
 | `id` | Unique within the plan; the handle every tool uses |
 | `title` | Human-readable, shown on the node |
 | `kind` | Who is allowed to complete it — see below |
-| `depends_on` | Steps that must **succeed** before this one may start |
-| `capability` | Registered capability/workflow id (required for those kinds only) |
+| `depends_on` | Steps that must be **satisfied** before this one may start |
+| `capability` | Registered capability/workflow id (required for those kinds; optional on a review) |
 | `description` | Optional detail for the reader |
-| `status` | Server-owned: `pending` → `running` → `succeeded`/`failed`/`skipped` |
+| `retry` | Attempts and backoff for this step; omit to inherit the capability's |
+| `timeout_seconds` | Wall-clock ceiling for one attempt |
+| `on_failure` | `stop` (default), `continue`, or `require_approval` |
+| `metadata` | Free-form annotations carried through to the UI |
+| `status` | Server-owned: see the lifecycle below |
 | `summary` | Server-owned: what happened |
 | `execution` | Server-owned: which run produced this |
+| `attempts` | Server-owned: how many tries it actually took |
 
-The last three are **server-owned**. A model can send them; `validate_plan`
+The last four are **server-owned**. A model can send them; `validate_plan`
 discards them and publishes with everything `pending`. Publishing a plan is a
 proposal, never a claim of progress.
 
@@ -100,7 +106,7 @@ what the step is about.
 | `capability` | One registered, typed unit of work | `run_capability` **only** |
 | `workflow` | A registered multi-step SOP | `run_workflow` **only** |
 | `dynamic` | Work the agent performs itself (a script it wrote) | agent, via `update_step` |
-| `review` | Explicit verification of artifacts before relying on them | agent, via `update_step` |
+| `review` | Explicit verification of artifacts before relying on them | agent, via `update_step` — or `run_capability`, if it binds one |
 | `answer` | Composing the final reply | agent, via `update_step` |
 
 `update_step` refuses `capability` and `workflow` steps outright:
@@ -115,9 +121,26 @@ that decided a step "basically worked" could mark it succeeded and unblock the
 rest of the graph. With it, a `succeeded` capability step always means a real run
 with a real result — so downstream steps and the final answer rest on something.
 
-`dynamic` and `review` are honestly self-reported, and that is the right trade:
-the agent *is* the executor there, so the alternative is not having those steps
-at all. Make them observable by having the agent register artifacts.
+`dynamic` and unbound `review` are honestly self-reported, and that is the right
+trade: the agent *is* the executor there, so the alternative is not having those
+steps at all. Make them observable by having the agent register artifacts.
+
+### A review can be made server-owned
+
+Self-reported verification is the weakest link in the chain, because it is
+exactly the step whose job is to catch a bad result. When the check itself can be
+codified, register it as a capability whose runner starts with `review.` or which
+is tagged `review`, and bind it:
+
+```python
+{"id": "calibration", "kind": "review", "capability": "review.genomic_inflation",
+ "depends_on": ["scan"]}
+```
+
+Publication verifies the capability really is review-scoped — an ordinary
+transform cannot be bound to a step the model describes as verification — and
+from then on the step follows the `run_capability` path. `update_step` refuses it
+like any other server-owned step.
 
 ---
 
@@ -171,6 +194,17 @@ runner ends up re-validating by hand.
 `max_attempts`, `retry_backoff_seconds`, `timeout_seconds`, and
 `requires_approval` are declared on the capability, so retry semantics live next
 to the work rather than in the caller.
+
+`requires_approval=True` is a **pre-execution** gate: the engine parks the node
+before invoking the runner, and supplies `ctx.config["approved"] = True` once a
+person says yes. The decision therefore precedes the side effect. This is the
+right setting for anything that writes outside the session, costs real money, or
+cannot be undone.
+
+A plan step may override the retry and timeout for one particular use — see
+[Defining plans](02-defining-plans.md#execution-policy). An omitted `retry` on
+the step inherits whatever the capability declared, so publishing a plan never
+silently downgrades a capability that asked for three attempts.
 
 ---
 
@@ -372,11 +406,50 @@ When something fails, the agent publishes a higher revision with a `reason`:
 ```
 
 Rules: revisions must increase; a revision replacing an earlier plan must carry a
-`reason`; you cannot replace a plan while a step is `running`. Old revisions are
-retained, and the renderer offers a revision switcher.
+`reason`; you cannot replace a plan while a step is `running` or
+`waiting_approval`; and a revision may not drop a declared objective. Old
+revisions are retained, and the renderer offers a revision switcher.
 
 Artifacts survive a replan — completed work is not thrown away just because the
 plan around it changed.
+
+## Objectives and the evidence ledger
+
+A plan can also state *what it is trying to find out*, separately from the steps
+it will run to find out:
+
+```python
+{
+  "objectives": [
+    {"id": "q1", "question": "Which loci associate with yield?",
+     "estimand": "per-allele effect", "independent_unit": "plot"}
+  ],
+  "analysis_coverage": [
+    {"objective_id": "q1", "status": "executed",
+     "reason": "structure-aware scan, λ = 0.95",
+     "step_ids": ["scan"], "artifact_refs": ["artifact:art-9f3c"]}
+  ]
+}
+```
+
+Objectives are optional. Declaring them buys three enforced properties:
+
+1. **Every objective must be covered.** A plan that declares a question and no
+   `analysis_coverage` entry for it is rejected.
+2. **"Executed" must cite evidence.** `status: "executed"` requires at least one
+   `step_ids` or `artifact_refs` entry. You cannot claim a question was answered
+   without naming what answers it.
+3. **An unanswered question must leave a thread.** `not_estimable`, `blocked`
+   and `deferred_by_scope` all require a `next_action`.
+
+And across revisions: a later plan may *reclassify* an objective — including as
+`not_estimable` — but may not remove it. The failure mode this closes is the
+quiet one: an investigation that finishes by narrowing until only the parts that
+worked are still being asked about.
+
+`independent_unit` deserves the field it gets. It is the assumption most often
+left implicit and most often responsible for a result that does not replicate —
+writing it down next to the question is cheap, and reviewable.
 
 ---
 

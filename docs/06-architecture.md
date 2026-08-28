@@ -13,6 +13,7 @@ fails in a specific way.
 - [Decision: events are the only output](#decision-events-are-the-only-output)
 - [Decision: turns run in the background](#decision-turns-run-in-the-background)
 - [Decision: one engine for everything](#decision-one-engine-for-everything)
+- [Decision: artifacts are promoted, not streamed](#decision-artifacts-are-promoted-not-streamed)
 - [Decision: fail closed](#decision-fail-closed)
 - [Decision: value-free errors](#decision-value-free-errors)
 - [The dependency budget](#the-dependency-budget)
@@ -215,9 +216,43 @@ the runner". It would be maybe thirty lines shorter and would immediately drift.
 Retry, cancellation, artifact registration, progress events, and timeout handling
 would exist twice, and the second copy would lag.
 
+`execute_plan` follows the same rule. It would have been easy to give a whole
+plan its own scheduler — it has different concerns, after all: step kinds,
+plan-level policy, projecting state back onto the plan. Instead
+`plan_executor.py` *compiles* a plan into one `ExecutionGraph` and hands it to
+the existing engine. It decides what the nodes are and nothing else. Every
+guarantee a single capability gets, a fifteen-step plan gets for free, and there
+is exactly one place where retry semantics live.
+
+A registered workflow inside a plan runs as one node wrapping a nested run,
+rather than being inlined. Inlining would let a plan step depend on a workflow's
+internals, which is precisely what registering it as a unit was meant to prevent.
+
 Same reasoning for cancellation: `Run.cancel()` awaits every node task before
 returning. Returning early would be simpler and would let a node keep writing
 artifacts after the caller believed the run was over.
+
+---
+
+## Decision: artifacts are promoted, not streamed
+
+A runner emits artifacts through `ctx.emit`, but they are not registered when it
+calls it. They are buffered and registered only once the attempt succeeds.
+
+Registering immediately is the obvious implementation and it is wrong in a
+specific, quiet way: a runner that writes a partial file and *then* discovers a
+transient failure has already published it. The retry succeeds, and now the
+session holds two artifacts on the same port — one complete, one truncated —
+with a downstream node free to bind either. The user sees both in their
+deliverables.
+
+Deferring costs a list and a loop. It buys the property that a registered
+artifact always came from an attempt that finished.
+
+The same reasoning applies to approval. `requires_approval` originally parked a
+node *after* its runner returned `needs_approval`, which meant the gate could
+only ever confirm a result — by then the side effect had happened. It now parks
+before the runner is invoked. A gate that runs after the action is not a gate.
 
 ---
 
@@ -277,8 +312,8 @@ graph-layout engine into their bundle or a web framework into their service. The
 engine runs in a Django view, a Celery worker, or a Lambda without dragging
 FastAPI along.
 
-The layout is ~200 lines because plan graphs are ≤24 nodes — a general graph
-library solves a much harder problem than the one we have.
+The layout is ~200 lines because plan graphs are small — a general graph library
+solves a much harder problem than the one we have.
 
 ---
 
@@ -364,9 +399,10 @@ deployments need session affinity, or an engine backed by a distributed queue �
 the `Engine` interface is small enough to reimplement, but LoomCraft does not
 ship that.
 
-**24-step plan ceiling.** Deliberate: bigger plans are unreadable and usually
-want a workflow for the fixed parts. Raise `MAX_STEPS` if your domain genuinely
-needs it, and expect the renderer to need scrolling.
+**Plan size.** The contract accepts 256 steps, but 24 is the size a reviewer can
+read at a glance, and a plan approaching it usually wants a workflow for the
+fixed parts. The ceiling exists for generated graphs; treat the smaller number
+as the design target and expect the renderer to need scrolling past it.
 
 **Lexical capability search.** Fine for tens of capabilities, weak at hundreds.
 Subclass `Registry.search` for embeddings — see

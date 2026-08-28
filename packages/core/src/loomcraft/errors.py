@@ -154,6 +154,12 @@ class UnsupportedActionError(BrokerError):
     code = "BROKER_ACTION_UNSUPPORTED"
 
 
+class InvalidArgumentError(BrokerError):
+    """A tool payload was structurally wrong in a way schema checks missed."""
+
+    code = "BROKER_INVALID_ARGUMENT"
+
+
 class ActionBudgetError(BrokerError):
     """The turn exceeded its per-turn tool-call budget."""
 
@@ -202,6 +208,7 @@ __all__ = [
     "EventLogError",
     "BrokerError",
     "UnsupportedActionError",
+    "InvalidArgumentError",
     "ActionBudgetError",
     "RepeatedActionError",
     "AwaitingInputsError",

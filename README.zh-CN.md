@@ -12,10 +12,10 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-38bdf8?style=flat-square&logo=python&logoColor=white&labelColor=0b1120)](packages/core/pyproject.toml)
 [![React 18+](https://img.shields.io/badge/react-18+-a78bfa?style=flat-square&logo=react&logoColor=white&labelColor=0b1120)](packages/renderer/package.json)
 [![核心依赖：仅 pydantic](https://img.shields.io/badge/%E6%A0%B8%E5%BF%83%E4%BE%9D%E8%B5%96-%E4%BB%85%20pydantic-fbbf24?style=flat-square&labelColor=0b1120)](packages/core/pyproject.toml)
-[![测试：232 通过](https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-232%20%E9%80%9A%E8%BF%87-34d399?style=flat-square&labelColor=0b1120)](#测试)
+[![测试：309 通过](https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-309%20%E9%80%9A%E8%BF%87-34d399?style=flat-square&labelColor=0b1120)](#测试)
 [![许可证：MIT](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-f472b6?style=flat-square&labelColor=0b1120)](LICENSE)
 
-[快速开始](#快速开始) · [核心概念](#核心概念) · [架构](#架构) · [文档](docs/) · [示例](examples/)
+[快速开始](#快速开始) · [为科研而生](#为科研而生) · [核心概念](#核心概念) · [架构](#架构) · [文档](docs/) · [示例](examples/)
 
 <br>
 
@@ -90,18 +90,75 @@ LoomCraft 是第三条路。任务图由智能体在运行时**自己写**——
 计划不是一个「界面拿来装点门面」的建议。下面这些都是强制执行的，而且有测试覆盖：
 
 - **图一定是 DAG。** 环、自依赖、指向不存在节点的依赖、重复 id、超大计划，都会在发布时被拒绝。
-- **一个步骤只有在它的依赖全部成功之后才会运行。** 边是执行的前置条件，不是文档。
-- **模型不能把自己的活儿标记成「干完了」。** `capability` 和 `workflow` 步骤**只能**由它们各自的
-  执行工具写入，所以一个步骤显示 `succeeded`，就一定对应一次真实发生过、产出了真实产物的执行。
+- **一个步骤只有在它的依赖被满足之后才会运行。** 边是执行的前置条件，不是文档。
+- **模型不能把自己的活儿标记成「干完了」。** `capability`、`workflow`，以及绑定了 capability 的
+  `review` 步骤，**只能**由它们各自的执行工具写入；所以一个步骤显示 `succeeded`，
+  就一定对应一次真实发生过、产出了真实产物的执行。
 - **重新规划是单调的，而且必须给出理由。** 新版本号必须递增，并且必须带 `reason`；旧版本会保留以供审计。
+- **声明过的问题不能被悄悄放弃。** 改版可以给一个 objective 重新定性 —— 包括定性为「无法估计」——
+  但不能让它消失。
+- **审批闸口挡在工作前面。** 标了 `requires_approval` 的 capability 会在 runner 被调用**之前**暂停，
+  所以决定发生在副作用之前，而不是事后追认。
 - **文件是引用，永远不是路径。** 输入是 `upload:` / `artifact:` / `scratch:` 引用，
   每次使用都会重新解析、重新校验校验和，并且被限制在会话内部。
 - **循环是有界的。** 每轮的调用预算和重复检测，会拦住一个已经绕晕了、只是在烧上下文而没有进展的模型。
 
 ### 你不用自己写的部分
 
-并行调度、带退避的重试、超时、真正会等待的取消、人工审批闸口、跳过传播、哈希链审计日志、
-可续传的 SSE 推流，以及一个读取同一份事件流的 React 渲染器。
+并行调度、带上限的指数退避重试、超时、真正会等待的取消、执行前的人工审批闸口、跳过传播、
+哈希链审计日志、可续传的 SSE 推流，以及一个读取同一份事件流的 React 渲染器。
+
+---
+
+## 为科研而生
+
+上面那次 GWAS 不是「包装成科研的 demo」。它就是 LoomCraft 要解决的问题的形状 ——
+而「探索」区别于「自动化」的三件事，全在里面。
+
+**下一步做什么，取决于上一步发现了什么。** 当所有步骤都能事先写死时，流水线是合适的；
+探索恰恰是写不死的那种情况：λ = 2.80 才是第 2 版里出现亲缘矩阵步骤的**原因**。
+LoomCraft 让智能体在运行时把这张图写出来，同时仍然不允许它伪造结果。
+
+**问题必须比答案活得更久。** 计划里可以声明 `objectives` —— 这次工作到底要确立什么 ——
+并用一份证据台账把每个问题绑定到交代它的步骤和产物上：
+
+```json
+{
+  "objectives": [
+    { "id": "q1", "question": "哪些位点与产量相关？",
+      "estimand": "每等位基因效应", "independent_unit": "小区" },
+    { "id": "q2", "question": "是否存在母体效应？",
+      "independent_unit": "母本" }
+  ],
+  "analysis_coverage": [
+    { "objective_id": "q1", "status": "executed",
+      "reason": "考虑群体结构的扫描，λ = 0.95",
+      "step_ids": ["scan"], "artifact_refs": ["artifact:art-9f3c"] },
+    { "objective_id": "q2", "status": "not_estimable",
+      "reason": "系谱里没有母本列，母体分量不可识别",
+      "next_action": "索取包含母本 id 的系谱导出" }
+  ]
+}
+```
+
+强制执行的是最要命的那部分：`executed` **必须**指向一个步骤或一个产物 ——
+你无法在不点名证据的情况下宣称某个问题已经回答。`not_estimable`、`blocked`、
+`deferred_by_scope` **必须**给出 `next_action`。而且后续改版无法让 `q2` 消失 ——
+结束一次探索最省事的办法就是不再问那个没做成的部分，这条路被堵死了。
+
+这就是「我们找到了三个位点」和「我们找到了三个位点；母体效应在这个设计下不可识别，
+以及需要什么才能识别」之间的区别。后者价值更高，而且只有后者能从记录里复现。
+
+**把一张已经定下来的图跑完，不该消耗模型轮次。** 图定了以后，`execute_plan`
+把整张图一次性交给调度器，作为一次可审计的运行 —— 独立分支并行、每步各自的重试和超时、
+审批闸口照常生效：
+
+```python
+await broker.dispatch("execute_plan", {})
+```
+
+一条探索性分支跑空了，那是**发现**，不是崩溃：`on_failure: "continue"`
+让它的独立下游继续跑，而失败本身仍然记录在步骤上和 `failed_nodes` 里。
 
 ---
 
@@ -235,8 +292,12 @@ kind 决定的是**谁有权把这个步骤标记为完成** —— 这才是重
 | `capability` | 一个已注册的、带类型契约的原子工作单元 | **只能**由 `run_capability` |
 | `workflow` | 一个已注册的多步 SOP | **只能**由 `run_workflow` |
 | `dynamic` | 智能体在自己沙箱里亲手做的工作 | 智能体，通过 `update_step` |
-| `review` | 对已产出产物的显式核验 | 智能体，通过 `update_step` |
+| `review` | 对已产出产物的显式核验 | 智能体，通过 `update_step` —— **除非**它绑定了一个 review 域的 capability，那样就归服务端所有 |
 | `answer` | 组织最终回复 | 智能体，通过 `update_step` |
+
+`review` 步骤可以指定一个 runner 以 `review.` 开头、或打了 `review` 标签的 capability。
+这样一来，核验就从「智能体说的」变成了「服务端跑出来的」—— 而这恰恰用在最需要的地方：
+那个决定结果可不可信的检查上。
 
 <div align="center">
 <img src="assets/step-kinds.zh.svg" width="820"
@@ -257,8 +318,24 @@ kind 决定的是**谁有权把这个步骤标记为完成** —— 这才是重
 </div>
 
 `succeeded` 是终态 —— 没有任何东西能让一个步骤退出成功状态，重新规划也不行。
-`failed` 和 `skipped` 则不是：一次重试或一个更高的版本可以把它们重新放回执行队列，
-这正是「不改写历史也能恢复」的做法。
+`failed`、`skipped` 和 `cancelled` 则不是：一次重试或一个更高的版本可以把它们重新放回执行队列，
+这正是「不改写历史也能恢复」的做法。`waiting_approval` 是等人做决定时停留的地方；
+`ready` 表示调度器可以派发、但还没派发的步骤 —— 当整张图同时在跑时，这个区分才有意义。
+
+每个步骤可以带自己的执行策略，就写在它所管辖的那份工作旁边：
+
+```json
+{
+  "id": "scan", "kind": "capability", "capability": "gwas.associate",
+  "depends_on": ["qc", "pca", "kinship"],
+  "retry": { "max_attempts": 3, "backoff_seconds": 2, "max_backoff_seconds": 60 },
+  "timeout_seconds": 900,
+  "on_failure": "stop"
+}
+```
+
+不写 `retry` 就继承 capability 自己声明的策略 —— 所以发布一份计划，
+绝不会把一个本来要求重试三次的能力悄悄降级成只跑一次。
 
 ### Capability（能力）
 
@@ -307,18 +384,20 @@ kind 决定的是**谁有权把这个步骤标记为完成** —— 这才是重
 
 ```
 packages/core/src/loomcraft/
-├── plan.py       Plan/Step 模型、DAG 校验、版本与状态转移规则
-├── graph.py      纯 DAG 算法（分层、环检测、关键路径）—— 零依赖
-├── registry.py   能力、工作流、runner —— 你的业务在这里接入
-├── context.py    runner 的契约：NodeContext / NodeResult
-├── engine.py     异步驱动：并行、重试、超时、审批、取消
-├── store.py      会话、四个信任区、source ref 解析、产物
-├── events.py     只追加的哈希链事件日志 + 订阅
-├── inputs.py     带类型的文件请求 + 上传到槽位的分配
-├── tools.py      10 个智能体工具的 JSON Schema，4 种厂商方言
-├── broker.py     唯一的入口：校验并派发每一次工具调用
-├── agent.py      智能体循环 —— Anthropic、OpenAI 兼容、脚本化
-└── server.py     可选的 FastAPI 路由：会话、上传、SSE、下载
+├── plan.py           Plan/Step 模型、DAG 校验、版本规则、objectives
+├── graph.py          纯 DAG 算法（分层、环检测、关键路径）—— 零依赖
+├── registry.py       能力、工作流、runner —— 你的业务在这里接入
+├── context.py        runner 的契约：NodeContext / NodeResult
+├── engine.py         异步驱动：并行、重试、超时、审批、取消
+├── plan_executor.py  把已发布的计划编译成一张图，供 execute_plan 使用
+├── store.py          会话、四个信任区、source ref 解析、产物
+├── events.py         只追加的哈希链事件日志 + 订阅
+├── inputs.py         带类型的文件请求 + 上传到槽位的分配
+├── tools.py          11 个智能体工具的 JSON Schema，4 种厂商方言
+├── broker.py         唯一的入口：校验并派发每一次工具调用
+├── agent.py          智能体循环 —— Anthropic、OpenAI 兼容、子进程、脚本化
+├── protocol.py       面向 Codex / app-server 宿主的 JSON-RPC 桥
+└── server.py         可选的 FastAPI 路由：会话、上传、SSE、下载
 
 packages/renderer/src/
 ├── state.ts      事件 reducer + 历史 hydration（与框架无关）
@@ -338,18 +417,58 @@ OpenAI Responses 和 MCP 四种方言。不管调用来自哪一种，broker 的
 
 ---
 
+## 接入你自己的模型运行时
+
+四条路，最终都落到同一个 broker 上，因此享有同样的保证：
+
+| 运行时 | 怎么接 |
+| --- | --- |
+| Claude | `AnthropicAgent()` |
+| 任何 OpenAI 兼容端点 | `OpenAICompatibleAgent(client, model=…, stream=True)` |
+| 跑在另一个进程里的模型 | `SubprocessAgent(["my-runner", "--serve"])` —— stdio 上的 JSONL |
+| Codex / app-server 宿主 | `AppServerBridge(broker)` —— JSON-RPC |
+
+最后一种是「模型运行时自己占一个进程，反过来向你要工具」的情况。
+turn 开始时把工具目录下发，然后把每一条进来的消息交给桥：
+
+```python
+from loomcraft import AppServerBridge, dynamic_tool_specs
+
+bridge = AppServerBridge(broker)
+
+tools = dynamic_tool_specs()          # 下发给运行时
+
+async def on_message(message: dict) -> dict:
+    return await bridge.handle(message)   # 返回 {} 表示那是一条通知
+```
+
+`initialize`、`tools/list`、`tools/call`，以及 Codex 的 `item/tool/call`，
+最终都落到 `broker.dispatch`。一次从 JSON-RPC 进来的工具调用，
+会像进程内循环发来的调用一样按已发布的计划做授权 —— 传输层不会变成第二扇门。
+
+---
+
 ## 测试
 
 ```bash
-pip install -e packages/core   # 或者：export PYTHONPATH=packages/core/src
-
-cd packages/core     && python -m unittest discover -s tests   # 187 个测试
-cd packages/renderer && npm ci && npm test                     # 45 个测试
+make install
+make check        # lint、Python 测试、渲染器类型检查/测试/构建、文档检查
 ```
 
-核心测试套件只用标准库跑 —— 不需要 pytest —— 覆盖了 DAG 校验、版本纪律、状态转移机、
-并发、重试、超时、审批、取消、跳过传播、路径穿越、完整性校验、事件日志篡改、
-槽位分配、契约，以及 broker 的每一道防线。
+或者直接跑：
+
+```bash
+python -m pytest -q packages/core/tests    # 255 个测试
+npm test --prefix packages/renderer        # 54 个测试
+```
+
+覆盖范围包括：DAG 校验、版本纪律、状态转移机、objective 证据台账、并发、
+重试与退避上限、超时、审批闸口、取消、跳过与失败策略、路径穿越、端口契约、
+完整性校验、事件日志篡改、宿主细节脱敏、JSON-RPC 桥、两个新增的 agent provider，
+以及 broker 的每一道防线。
+
+`packages/core/tests/test_hardening.py` 值得单独读一遍：
+里面每一个测试都对应一个曾经存在的缺陷 —— 那时引擎会把「其实没有安全发生的事」报告为成功。
 
 ---
 
@@ -360,12 +479,15 @@ cd packages/renderer && npm ci && npm test                     # 45 个测试
 | 指南 | 内容 |
 | --- | --- |
 | [Concepts](docs/01-concepts.md) | 模型本身：计划、kind、能力、会话、事件 |
-| [Defining plans](docs/02-defining-plans.md) | 计划 schema、校验规则、状态转移、重新规划 |
-| [Agent integration](docs/03-agent-integration.md) | 工具面、提示词、Claude/OpenAI/MCP、循环设计 |
+| [Defining plans](docs/02-defining-plans.md) | 计划 schema、校验规则、状态转移、objectives、重新规划 |
+| [Agent integration](docs/03-agent-integration.md) | 工具面、提示词、Claude/OpenAI/子进程/Codex、循环设计 |
 | [Frontend integration](docs/04-frontend-integration.md) | reducer、SSE、组件、主题、自定义界面 |
 | [Extending](docs/05-extending.md) | runner、能力、工作流、存储、传输层 |
 | [Architecture](docs/06-architecture.md) | 设计决策，以及为什么这么定 |
 | [API reference](docs/07-api-reference.md) | 每一个公开符号、工具、事件和接口 |
+
+机器可读的契约在 [`packages/core/schema/`](packages/core/schema/)，
+由代码生成，因此不可能和真正在跑的校验器漂移。
 
 ---
 

@@ -49,6 +49,7 @@ EVENT_TYPES: tuple[str, ...] = (
     "execution_started",
     "execution_progress",
     "execution_finished",
+    "run_timeout",
     "node_log",
     "artifact_registered",
     "input_required",

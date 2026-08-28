@@ -13,7 +13,7 @@ mid-run rejoins cleanly instead of restarting.
 
 Install the extra to use this module::
 
-    pip install "loomcraft[server] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"
+    pip install "loomcraft[server] @ git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from .broker import BrokerLimits, ToolBroker
 from .errors import LoomCraftError
 from .events import Event
 from .registry import Registry
-from .store import Session, SessionStore
+from .store import Session, SessionStore, public_artifact, public_execution
 
 logger = logging.getLogger("loomcraft.server")
 
@@ -61,7 +61,17 @@ class TurnManager:
 
     def is_busy(self, session_id: str) -> bool:
         task = self._tasks.get(session_id)
-        return task is not None and not task.done()
+        if task is not None and not task.done():
+            return True
+        # An approval pause outlives the model turn: the task is done, but the
+        # run is still open and holding the session's execution slot.
+        broker = self._brokers.get(session_id)
+        active = broker.active_run if broker is not None else None
+        return active is not None and active.status not in {
+            "succeeded",
+            "failed",
+            "cancelled",
+        }
 
     def broker(self, session_id: str) -> ToolBroker | None:
         return self._brokers.get(session_id)
@@ -84,7 +94,15 @@ class TurnManager:
             session.update_meta(status="running")
             try:
                 result = await agent.run_turn(broker, message, on_event=on_event)
-                if result.error:
+                paused = (
+                    broker.active_run is not None
+                    and broker.active_run.status == "paused_approval"
+                )
+                if paused:
+                    session.update_meta(
+                        status="waiting_approval", last_turn_status="waiting_approval"
+                    )
+                elif result.error:
                     session.emit("error", {"message": result.error})
                     session.update_meta(status="idle", last_turn_status="error")
                 else:
@@ -103,7 +121,15 @@ class TurnManager:
                 session.emit("done", {"ok": False})
                 raise
             finally:
-                await broker.close()
+                # Closing cancels the active run. An approval pause is
+                # deliberately still open, so keep the broker alive — the
+                # approval endpoint resumes that exact Run rather than
+                # reconstructing its state.
+                if (
+                    broker.active_run is None
+                    or broker.active_run.status != "paused_approval"
+                ):
+                    await broker.close()
 
         task = asyncio.create_task(run(), name=f"loomcraft-turn-{session.id}")
         self._tasks[session.id] = task
@@ -114,6 +140,14 @@ class TurnManager:
         broker = self._brokers.get(session_id)
         cancelled = False
         if broker is not None:
+            active = broker.active_run
+            # A paused run is live work even with no task attached; cancelling
+            # it is a real cancellation and should be reported as one.
+            cancelled = active is not None and active.status not in {
+                "succeeded",
+                "failed",
+                "cancelled",
+            }
             await broker.close()
         if task is not None and not task.done():
             task.cancel()
@@ -121,6 +155,7 @@ class TurnManager:
                 await task
             cancelled = True
         self._tasks.pop(session_id, None)
+        self._brokers.pop(session_id, None)
         return cancelled
 
     async def shutdown(self) -> None:
@@ -145,7 +180,7 @@ def create_router(
     if not FASTAPI_AVAILABLE:  # pragma: no cover
         raise RuntimeError(
             "loomcraft.server needs FastAPI: "
-            'pip install "loomcraft[server] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"'
+            'pip install "loomcraft[server] @ git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"'
         )
 
     router = APIRouter(prefix=prefix, tags=["loomcraft"])
@@ -306,15 +341,22 @@ def create_router(
         session = require(session_id)
         queue: asyncio.Queue[Event] = asyncio.Queue()
         loop = asyncio.get_running_loop()
-        backlog = session.events.read(after_seq=after_seq)
+        # Subscribe *before* reading the backlog. The other order leaves a
+        # window in which an appended event is in neither the backlog nor the
+        # queue, and is lost for good. Overlap is harmless — `last_sent` drops
+        # the duplicates.
         unsubscribe = session.events.subscribe(
             lambda event: loop.call_soon_threadsafe(queue.put_nowait, event)
         )
+        backlog = session.events.read(after_seq=after_seq)
 
         async def stream() -> Any:
+            last_sent = after_seq
             try:
                 for event in backlog:
-                    yield event.sse()
+                    if event.seq > last_sent:
+                        yield event.sse()
+                        last_sent = event.seq
                 while not await request.is_disconnected():
                     try:
                         event = await asyncio.wait_for(
@@ -323,8 +365,9 @@ def create_router(
                     except asyncio.TimeoutError:
                         yield ": heartbeat\n\n"
                         continue
-                    if event.seq > after_seq:
+                    if event.seq > last_sent:
                         yield event.sse()
+                        last_sent = event.seq
             finally:
                 unsubscribe()
 
@@ -355,6 +398,15 @@ def create_router(
 
     # ── Approvals ───────────────────────────────────────────────────────────
 
+    @router.post("/sessions/{session_id}/executions/{run_id}/cancel")
+    async def cancel_execution(session_id: str, run_id: str) -> dict[str, Any]:
+        """Cancel one run without ending the whole turn."""
+        session = require(session_id)
+        broker = turns.broker(session.id)
+        if broker is None:
+            raise HTTPException(status_code=404, detail="execution not found")
+        return {"run_id": run_id, "cancelled": await broker.cancel_run(run_id)}
+
     @router.post("/sessions/{session_id}/executions/{run_id}/approve")
     async def approve(
         session_id: str,
@@ -362,23 +414,36 @@ def create_router(
         payload: dict[str, Any] = Body(default={}),
     ) -> dict[str, Any]:
         session = require(session_id)
-        broker = turns.broker(session.id)
-        run = broker.engine.get(run_id) if broker is not None else None
-        if run is None:
-            raise HTTPException(status_code=404, detail="execution not found")
-        node_id = str(payload.get("node_id") or "")
+        broker = turns.broker(session.id) or broker_for(session)
+        node_id = str(payload.get("node_id") or payload.get("step_id") or "")
         approved = bool(payload.get("approved", True))
-        if not run.approve(node_id, approved):
-            raise HTTPException(
-                status_code=409, detail="node is not awaiting approval"
-            )
-        return {"run_id": run_id, "node_id": node_id, "approved": approved}
+        # Route through the broker rather than the raw Run: it resolves the
+        # gate, waits for the run to reach its next boundary, and projects the
+        # outcome back onto the plan.
+        execution = await broker.approve_run(
+            run_id,
+            node_id,
+            approved=approved,
+            comment=str(payload.get("comment") or ""),
+        )
+        if execution is None:
+            raise HTTPException(status_code=409, detail="node is not awaiting approval")
+        return {
+            "run_id": run_id,
+            "node_id": node_id,
+            "approved": approved,
+            "execution": public_execution(execution),
+        }
 
     # ── Artifacts ───────────────────────────────────────────────────────────
 
     @router.get("/sessions/{session_id}/artifacts")
     async def list_artifacts(session_id: str) -> dict[str, Any]:
-        return {"artifacts": require(session_id).list_artifacts()}
+        return {
+            "artifacts": [
+                public_artifact(item) for item in require(session_id).list_artifacts()
+            ]
+        }
 
     @router.get("/sessions/{session_id}/artifacts/{artifact_id}")
     async def download_artifact(session_id: str, artifact_id: str) -> Any:
@@ -410,7 +475,7 @@ def create_app(
     if not FASTAPI_AVAILABLE:  # pragma: no cover
         raise RuntimeError(
             "loomcraft.server needs FastAPI: "
-            'pip install "loomcraft[server] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"'
+            'pip install "loomcraft[server] @ git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"'
         )
     app = FastAPI(title=title, version="0.1.0")
     manager = TurnManager()

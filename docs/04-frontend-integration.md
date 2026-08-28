@@ -327,13 +327,20 @@ Class names are stable and prefixed `lc-`: `lc-node`, `lc-node--running`,
 `lc-edge--active`, `lc-timeline__item--tool`, and so on. Restyle them directly if
 custom properties are not enough.
 
+There is one modifier per step status, including `lc-node--ready`,
+`lc-node--waiting_approval` and `lc-node--cancelled`. `waiting_approval` uses
+`--lc-warn` so a step held at a human gate reads differently from one that is
+simply working.
+
 ---
 
 ## Accessibility
 
-- The graph is `aria-hidden` and paired with a visually hidden ordered list
-  stating each step, its kind, status, and dependencies. A DAG whose only
-  representation is spatial is unusable with a screen reader.
+- Every node is a real focusable `<button>` carrying an accessible name that
+  states its title, kind, status and dependencies, so a DAG is navigable
+  without seeing it. The decorative edge layer is `aria-hidden`.
+- SVG marker ids are scoped per component instance, so rendering two graphs on
+  one page does not make them share arrowheads.
 - The progress bar is a real `role="progressbar"` with correct value attributes.
 - Running indicators and animated edges respect `prefers-reduced-motion`.
 - Every control is a real `<button>` with an accessible name.

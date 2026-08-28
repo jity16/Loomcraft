@@ -12,10 +12,10 @@ The UI draws it — live.
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-38bdf8?style=flat-square&logo=python&logoColor=white&labelColor=0b1120)](packages/core/pyproject.toml)
 [![React 18+](https://img.shields.io/badge/react-18+-a78bfa?style=flat-square&logo=react&logoColor=white&labelColor=0b1120)](packages/renderer/package.json)
 [![core deps: pydantic only](https://img.shields.io/badge/core%20deps-pydantic%20only-fbbf24?style=flat-square&labelColor=0b1120)](packages/core/pyproject.toml)
-[![tests: 232 passing](https://img.shields.io/badge/tests-232%20passing-34d399?style=flat-square&labelColor=0b1120)](#testing)
+[![tests: 309 passing](https://img.shields.io/badge/tests-309%20passing-34d399?style=flat-square&labelColor=0b1120)](#testing)
 [![license: MIT](https://img.shields.io/badge/license-MIT-f472b6?style=flat-square&labelColor=0b1120)](LICENSE)
 
-[Quick start](#quick-start) · [Core concepts](#core-concepts) · [Architecture](#architecture) · [Docs](docs/) · [Examples](examples/)
+[Quick start](#quick-start) · [Investigative work](#built-for-investigative-work) · [Core concepts](#core-concepts) · [Architecture](#architecture) · [Docs](docs/) · [Examples](examples/)
 
 <br>
 
@@ -101,13 +101,19 @@ A plan is not a suggestion the UI decorates. These are enforced, with tests:
 
 - **The graph is a DAG.** Cycles, self-dependencies, unknown dependency targets,
   duplicate ids, and oversized plans are rejected at publish time.
-- **A step runs only when its dependencies have succeeded.** The edges are an
+- **A step runs only when its dependencies are satisfied.** The edges are an
   execution precondition, not documentation.
 - **The model cannot mark its own work done.** `capability` and `workflow` steps
-  are written *only* by their execution tools, so a step reading `succeeded`
-  corresponds to a real run that produced real artifacts.
+  — and a `review` step bound to a capability — are written *only* by their
+  execution tools, so a step reading `succeeded` corresponds to a real run that
+  produced real artifacts.
 - **Replans are monotonic and explained.** A new revision must increase and must
   carry a `reason`; the old revision is kept for audit.
+- **Declared questions cannot be quietly abandoned.** A revision may reclassify
+  an objective — including as *unanswerable* — but may not drop one.
+- **Approval gates sit in front of the work.** A capability marked
+  `requires_approval` parks *before* its runner is invoked, so the decision
+  precedes the side effect rather than blessing it afterwards.
 - **Files are references, never paths.** Inputs are `upload:`/`artifact:`/`scratch:`
   refs, re-resolved and checksum-verified on every use, confined to the session.
 - **Loops are bounded.** Per-turn call budgets and repeat detection stop a
@@ -115,9 +121,71 @@ A plan is not a suggestion the UI decorates. These are enforced, with tests:
 
 ### What you get for free
 
-Parallel scheduling, retry with backoff, timeouts, cancellation that actually
-waits, human-approval gates, skip propagation, a hash-chained audit log,
-SSE streaming with resume, and a React renderer that reads the same events.
+Parallel scheduling, retry with capped exponential backoff, timeouts,
+cancellation that actually waits, pre-execution approval gates, skip
+propagation, a hash-chained audit log, SSE streaming with resume, and a React
+renderer that reads the same events.
+
+---
+
+## Built for investigative work
+
+The GWAS run above is not a demo dressed up as science. It is the shape of the
+problem LoomCraft was built for, and the three things that make investigation
+different from automation are all in it.
+
+**The next step depends on what the last one found.** A pipeline is a good fit
+when the steps are known in advance. Investigation is the case where they are
+not: λ = 2.80 is *why* revision 2 has a kinship step. LoomCraft lets the agent
+author that graph at runtime and still refuses to let it fake a result.
+
+**The questions must outlive the answers.** A plan may declare `objectives` —
+what the work is actually meant to establish — and an evidence ledger binding
+each one to the steps and artifacts that discharge it:
+
+```json
+{
+  "objectives": [
+    { "id": "q1", "question": "Which loci associate with yield?",
+      "estimand": "per-allele effect", "independent_unit": "plot" },
+    { "id": "q2", "question": "Is there a maternal effect?",
+      "independent_unit": "dam" }
+  ],
+  "analysis_coverage": [
+    { "objective_id": "q1", "status": "executed",
+      "reason": "structure-aware scan, λ = 0.95",
+      "step_ids": ["scan"], "artifact_refs": ["artifact:art-9f3c"] },
+    { "objective_id": "q2", "status": "not_estimable",
+      "reason": "the pedigree has no dam column, so the maternal component is not identifiable",
+      "next_action": "request a pedigree export including dam ids" }
+  ]
+}
+```
+
+The server enforces the part that matters. `executed` **requires** a step or an
+artifact to point at — you cannot claim a question was answered without naming
+the evidence. `not_estimable`, `blocked` and `deferred_by_scope` **require** a
+`next_action`. And a later revision cannot make `q2` disappear; the easiest way
+to finish an investigation is to stop asking the part that did not work, and
+that route is closed.
+
+This is the difference between a report that says *"we found three loci"* and
+one that says *"we found three loci; the maternal question was not identifiable
+from this design, and here is what would make it so."* The second is worth more,
+and only the second is reproducible from the record.
+
+**Getting through a settled plan should not cost model turns.** Once the graph
+is decided, `execute_plan` hands the whole thing to the scheduler in one audited
+run — independent branches concurrent, per-step retry and timeout, approval
+gates honoured:
+
+```python
+await broker.dispatch("execute_plan", {})
+```
+
+An exploratory branch that comes back empty is a finding, not a crash:
+`on_failure: "continue"` lets its independent dependents proceed while the
+failure stays recorded on the step and in `failed_nodes`.
 
 ---
 
@@ -254,8 +322,13 @@ Kind decides *who is allowed to complete the step* — the important half.
 | `capability` | One registered, typed unit of work | `run_capability` **only** |
 | `workflow` | A registered multi-step SOP | `run_workflow` **only** |
 | `dynamic` | Work the agent does itself in its sandbox | the agent, via `update_step` |
-| `review` | Explicit verification of produced artifacts | the agent, via `update_step` |
+| `review` | Explicit verification of produced artifacts | the agent, via `update_step` — *unless* it binds a review-scoped capability, which makes it server-owned |
 | `answer` | Composing the final reply | the agent, via `update_step` |
+
+A `review` step may name a capability whose runner starts with `review.` or
+which is tagged `review`. That turns verification from something the agent
+asserts into something the server ran — useful exactly where it matters, on the
+check that decides whether a result is trustworthy.
 
 <div align="center">
 <img src="assets/step-kinds.svg" width="820"
@@ -277,8 +350,27 @@ so the log can never contain a step that went backwards.
 </div>
 
 `succeeded` is terminal — nothing can un-succeed a step, including a replan.
-`failed` and `skipped` are not: a retry or a higher revision may put them back
-in flight, which is exactly how recovery works without rewriting history.
+`failed`, `skipped` and `cancelled` are not: a retry or a higher revision may put
+them back in flight, which is exactly how recovery works without rewriting
+history. `waiting_approval` is where a step sits while a person decides, and
+`ready` marks a step the scheduler could dispatch but has not yet — a
+distinction that matters once a whole plan is in flight at once.
+
+Each step may carry its own execution policy, which the reader sees next to the
+work it governs:
+
+```json
+{
+  "id": "scan", "kind": "capability", "capability": "gwas.associate",
+  "depends_on": ["qc", "pca", "kinship"],
+  "retry": { "max_attempts": 3, "backoff_seconds": 2, "max_backoff_seconds": 60 },
+  "timeout_seconds": 900,
+  "on_failure": "stop"
+}
+```
+
+Omitting `retry` inherits whatever the capability declared, so publishing a plan
+never silently downgrades a capability that asked for three attempts.
 
 ### Capability
 
@@ -332,18 +424,20 @@ see what the agent believed before and after it learned something.
 
 ```
 packages/core/src/loomcraft/
-├── plan.py       Plan/Step models, DAG validation, revision + transition rules
-├── graph.py      Pure DAG algorithms (layering, cycles, critical path) — no deps
-├── registry.py   Capabilities, workflows, runners — where your domain plugs in
-├── context.py    The runner contract: NodeContext / NodeResult
-├── engine.py     Async driver: parallel, retry, timeout, approval, cancellation
-├── store.py      Sessions, the four zones, source-ref resolution, artifacts
-├── events.py     Append-only hash-chained event log + subscriptions
-├── inputs.py     Typed file requests + upload→slot allocation
-├── tools.py      The 10 agent tools as JSON Schema, in 4 provider dialects
-├── broker.py     The only door: validates and dispatches every tool call
-├── agent.py      Agent loops — Anthropic, OpenAI-compatible, and scripted
-└── server.py     Optional FastAPI router: sessions, uploads, SSE, downloads
+├── plan.py           Plan/Step models, DAG validation, revisions, objectives
+├── graph.py          Pure DAG algorithms (layering, cycles, critical path)
+├── registry.py       Capabilities, workflows, runners — where your domain plugs in
+├── context.py        The runner contract: NodeContext / NodeResult
+├── engine.py         Async driver: parallel, retry, timeout, approval, cancellation
+├── plan_executor.py  Compiles a published plan into one graph for execute_plan
+├── store.py          Sessions, the four zones, source-ref resolution, artifacts
+├── events.py         Append-only hash-chained event log + subscriptions
+├── inputs.py         Typed file requests + upload→slot allocation
+├── tools.py          The 11 agent tools as JSON Schema, in 4 provider dialects
+├── broker.py         The only door: validates and dispatches every tool call
+├── agent.py          Agent loops — Anthropic, OpenAI-compatible, subprocess, scripted
+├── protocol.py       JSON-RPC bridge for Codex / app-server hosts
+└── server.py         Optional FastAPI router: sessions, uploads, SSE, downloads
 
 packages/renderer/src/
 ├── state.ts      The event reducer + history hydration (framework-agnostic)
@@ -366,20 +460,62 @@ constructor change.
 
 ---
 
+## Bringing your own model runtime
+
+Four ways in, all landing on the same broker and therefore the same guarantees:
+
+| Runtime | How |
+| --- | --- |
+| Claude | `AnthropicAgent()` |
+| Any OpenAI-compatible endpoint | `OpenAICompatibleAgent(client, model=…, stream=True)` |
+| A model runner in another process | `SubprocessAgent(["my-runner", "--serve"])` — JSONL over stdio |
+| Codex / an app-server host | `AppServerBridge(broker)` — JSON-RPC |
+
+The last one is the case where the model runtime owns its own process and calls
+*back* for tools. Advertise the catalog at turn start and route each inbound
+message through the bridge:
+
+```python
+from loomcraft import AppServerBridge, dynamic_tool_specs
+
+bridge = AppServerBridge(broker)
+
+tools = dynamic_tool_specs()          # hand these to the runtime
+
+async def on_message(message: dict) -> dict:
+    return await bridge.handle(message)   # {} means it was a notification
+```
+
+`initialize`, `tools/list`, `tools/call` and Codex's `item/tool/call` all
+resolve to `broker.dispatch`. A tool call arriving over JSON-RPC is authorised
+against the published plan exactly like one from an in-process loop — the
+transport does not become a second door.
+
+---
+
 ## Testing
 
 ```bash
-pip install -e packages/core   # or: export PYTHONPATH=packages/core/src
-
-cd packages/core     && python -m unittest discover -s tests   # 187 tests
-cd packages/renderer && npm ci && npm test                     # 45 tests
+make install
+make check        # lint, python tests, renderer typecheck/tests/build, docs
 ```
 
-The core suite runs on the standard library — no pytest required — and covers
-DAG validation, revision discipline, the transition state machine, concurrency,
-retry, timeouts, approval, cancellation, skip propagation, path traversal,
-integrity checks, event-log tampering, allocation, contracts, and every broker
-guardrail.
+Or directly:
+
+```bash
+python -m pytest -q packages/core/tests    # 255 tests
+npm test --prefix packages/renderer        # 54 tests
+```
+
+The suites cover DAG validation, revision discipline, the transition state
+machine, the objective ledger, concurrency, retry and backoff caps, timeouts,
+approval gating, cancellation, skip and failure policy, path traversal,
+port contracts, integrity checks, event-log tampering, host-detail scrubbing,
+the JSON-RPC bridge, both new agent providers, and every broker guardrail.
+
+`packages/core/tests/test_hardening.py` is worth reading on its own: each test
+there corresponds to a defect that once let the engine report success for
+something that had not safely happened.
 
 ---
 
@@ -388,12 +524,16 @@ guardrail.
 | Guide | What's in it |
 | --- | --- |
 | [Concepts](docs/01-concepts.md) | The model: plans, kinds, capabilities, sessions, events |
-| [Defining plans](docs/02-defining-plans.md) | Plan schema, validation rules, transitions, replanning |
-| [Agent integration](docs/03-agent-integration.md) | Tool surface, prompting, Claude/OpenAI/MCP, loop design |
+| [Defining plans](docs/02-defining-plans.md) | Plan schema, validation rules, transitions, objectives, replanning |
+| [Agent integration](docs/03-agent-integration.md) | Tool surface, prompting, Claude/OpenAI/subprocess/Codex, loop design |
 | [Frontend integration](docs/04-frontend-integration.md) | Reducer, SSE, components, theming, custom UIs |
 | [Extending](docs/05-extending.md) | Runners, capabilities, workflows, storage, transports |
 | [Architecture](docs/06-architecture.md) | Design decisions and why they were made that way |
 | [API reference](docs/07-api-reference.md) | Every public symbol, tool, event, and endpoint |
+
+Machine-readable contracts live in [`packages/core/schema/`](packages/core/schema/)
+and are generated from the code, so they cannot drift from the validators that
+actually run.
 
 ---
 

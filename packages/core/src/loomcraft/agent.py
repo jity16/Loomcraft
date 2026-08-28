@@ -8,20 +8,31 @@ two, plus two implementations:
     A production loop against the Claude Messages API: streaming, adaptive
     thinking, parallel tool execution, and a bounded iteration count.
 
+:class:`OpenAICompatibleAgent`
+    The same loop against any OpenAI-style chat-completions endpoint, with
+    optional streaming.
+
+:class:`SubprocessAgent`
+    Talks JSONL over stdin/stdout to a model runner in another process — a
+    local llama.cpp wrapper, a vendor CLI, an in-house gateway. Nothing needs
+    to be importable as a Python client.
+
 :class:`ScriptedAgent`
     A deterministic agent that replays a fixed list of tool calls. Examples,
     tests, and CI use it so the whole engine is exercisable with no API key and
     no network.
 
-Both satisfy the same :class:`Agent` protocol, so a host can swap them per
+All satisfy the same :class:`Agent` protocol, so a host can swap them per
 environment.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Protocol, Sequence
 
@@ -178,7 +189,7 @@ class AnthropicAgent:
             except ImportError as exc:  # pragma: no cover - import guard
                 raise RuntimeError(
                     "AnthropicAgent needs the `anthropic` package: "
-                    'pip install "loomcraft[anthropic] @ git+git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"'
+                    'pip install "loomcraft[anthropic] @ git+https://github.com/jity16/Loomcraft.git#subdirectory=packages/core"'
                 ) from exc
             # Resolves ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or an
             # `ant auth login` profile — no key needs to be passed explicitly.
@@ -323,6 +334,7 @@ class OpenAICompatibleAgent:
         max_iterations: int = DEFAULT_MAX_ITERATIONS,
         tools: Sequence[ToolSpec] | None = None,
         extra_body: Mapping[str, Any] | None = None,
+        stream: bool = False,
     ) -> None:
         self.client = client
         self.model = model
@@ -330,6 +342,9 @@ class OpenAICompatibleAgent:
         self.max_iterations = max_iterations
         self._specs = list(tools) if tools is not None else tool_specs()
         self.extra_body = dict(extra_body or {})
+        #: Emit ``message_delta`` events as tokens arrive. The turn's semantics
+        #: are unchanged; only the UI's latency is.
+        self.stream = stream
 
     async def run_turn(
         self,
@@ -348,36 +363,42 @@ class OpenAICompatibleAgent:
         try:
             for iteration in range(1, self.max_iterations + 1):
                 result.iterations = iteration
-                response = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    tools=to_dialect(self._specs, "openai"),
-                    **self.extra_body,
-                )
-                choice = response.choices[0]
-                assistant = choice.message
-                if assistant.content:
-                    result.text = assistant.content
-                    if on_event is not None:
-                        on_event(
-                            "message",
-                            {"item_id": f"msg-{iteration}", "text": assistant.content},
+                if self.stream:
+                    text, calls, finish, assistant = await self._stream_once(
+                        messages, iteration, on_event
+                    )
+                else:
+                    response = await self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        tools=to_dialect(self._specs, "openai"),
+                        **self.extra_body,
+                    )
+                    choice = response.choices[0]
+                    message_obj = choice.message
+                    text = message_obj.content or ""
+                    finish = choice.finish_reason
+                    assistant = message_obj.model_dump()
+                    calls = [
+                        ToolCall(
+                            id=item.id,
+                            name=item.function.name,
+                            arguments=_json_arguments(item.function.arguments),
                         )
-                result.stop_reason = choice.finish_reason
+                        for item in (getattr(message_obj, "tool_calls", None) or [])
+                    ]
+                    if text and on_event is not None:
+                        on_event(
+                            "message", {"item_id": f"msg-{iteration}", "text": text}
+                        )
+                if text:
+                    result.text = text
+                result.stop_reason = finish
 
-                raw_calls = getattr(assistant, "tool_calls", None) or []
-                if not raw_calls:
+                if not calls:
                     return result
 
-                calls = [
-                    ToolCall(
-                        id=item.id,
-                        name=item.function.name,
-                        arguments=json.loads(item.function.arguments or "{}"),
-                    )
-                    for item in raw_calls
-                ]
-                messages.append(assistant.model_dump())
+                messages.append(assistant)
                 executed = await execute_tool_calls(broker, calls, on_event=on_event)
                 result.tool_calls.extend(call for call, _ in executed)
                 result.tool_results.extend(response for _, response in executed)
@@ -401,6 +422,343 @@ class OpenAICompatibleAgent:
             logger.exception("openai-compatible agent turn failed")
             result.error = f"{type(exc).__name__}: {exc}"
             return result
+
+    async def _stream_once(
+        self,
+        messages: list[dict[str, Any]],
+        iteration: int,
+        on_event: EventSink | None,
+    ) -> tuple[str, list[ToolCall], str | None, dict[str, Any]]:
+        """Consume one streamed completion into the same shape as a batch one.
+
+        Tool-call arguments arrive as fragments spread over many chunks and
+        keyed only by index, so they are reassembled here rather than parsed
+        per chunk.
+        """
+        stream = await self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            tools=to_dialect(self._specs, "openai"),
+            stream=True,
+            **self.extra_body,
+        )
+        text_parts: list[str] = []
+        # index -> {"id", "name", "arguments"}
+        partial: dict[int, dict[str, str]] = {}
+        finish: str | None = None
+
+        async for chunk in stream:
+            for choice in getattr(chunk, "choices", None) or []:
+                if getattr(choice, "finish_reason", None):
+                    finish = choice.finish_reason
+                delta = getattr(choice, "delta", None)
+                if delta is None:
+                    continue
+                piece = getattr(delta, "content", None)
+                if piece:
+                    text_parts.append(piece)
+                    if on_event is not None:
+                        on_event(
+                            "message_delta",
+                            {"item_id": f"msg-{iteration}", "text": piece},
+                        )
+                for item in getattr(delta, "tool_calls", None) or []:
+                    index = int(getattr(item, "index", 0) or 0)
+                    slot = partial.setdefault(
+                        index, {"id": "", "name": "", "arguments": ""}
+                    )
+                    if getattr(item, "id", None):
+                        slot["id"] = item.id
+                    function = getattr(item, "function", None)
+                    if function is not None:
+                        if getattr(function, "name", None):
+                            slot["name"] = function.name
+                        if getattr(function, "arguments", None):
+                            slot["arguments"] += function.arguments
+
+        text = "".join(text_parts)
+        if text and on_event is not None:
+            on_event("message", {"item_id": f"msg-{iteration}", "text": text})
+
+        calls = [
+            ToolCall(
+                id=slot["id"] or f"call-{iteration}-{index}",
+                name=slot["name"],
+                arguments=_json_arguments(slot["arguments"]),
+            )
+            for index, slot in sorted(partial.items())
+            if slot["name"]
+        ]
+        assistant: dict[str, Any] = {"role": "assistant", "content": text or None}
+        if calls:
+            assistant["tool_calls"] = [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                    },
+                }
+                for call in calls
+            ]
+        return text, calls, finish, assistant
+
+
+# ── Subprocess (JSONL over stdio) ───────────────────────────────────────────
+
+
+class SubprocessAgent:
+    """Drives a model runner living in another process, over JSONL on stdio.
+
+    Useful when the model is reachable as a command rather than a Python
+    client: a local inference server wrapper, a vendor CLI, an internal
+    gateway. LoomCraft writes one request line and reads reply lines until the
+    process reports the turn is done.
+
+    Request written to stdin, one JSON object per line::
+
+        {"type": "request", "messages": [...], "tools": [...]}
+
+    Replies read from stdout, one JSON object per line::
+
+        {"type": "delta",     "text": "partial text"}
+        {"type": "tool_call", "id": "c1", "name": "publish_plan",
+                              "arguments": {...}}
+        {"type": "done",      "text": "final text", "stop_reason": "end_turn"}
+
+    Anything the process writes to stderr is logged, not parsed. A line that is
+    not valid JSON is skipped rather than failing the turn, so a runner that
+    prints a banner does not take the session down.
+    """
+
+    def __init__(
+        self,
+        argv: Sequence[str],
+        *,
+        system: str = SYSTEM_PROMPT,
+        max_iterations: int = DEFAULT_MAX_ITERATIONS,
+        tools: Sequence[ToolSpec] | None = None,
+        dialect: Dialect = "openai",
+        cwd: str | os.PathLike[str] | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout_seconds: float | None = 600.0,
+    ) -> None:
+        if not argv:
+            raise ValueError("argv must contain the runner command")
+        self.argv = tuple(str(item) for item in argv)
+        self.system = system
+        self.max_iterations = max_iterations
+        self._specs = list(tools) if tools is not None else tool_specs()
+        self.dialect = dialect
+        self.cwd = cwd
+        self.env = dict(env) if env is not None else None
+        self.timeout_seconds = timeout_seconds
+
+    async def run_turn(
+        self,
+        broker: ToolBroker,
+        message: str,
+        *,
+        history: Sequence[Mapping[str, Any]] | None = None,
+        on_event: EventSink | None = None,
+    ) -> TurnResult:
+        broker.begin_turn()
+        messages: list[dict[str, Any]] = [{"role": "system", "content": self.system}]
+        messages.extend(dict(row) for row in (history or []))
+        messages.append({"role": "user", "content": message})
+        result = TurnResult(messages=messages)
+
+        try:
+            for iteration in range(1, self.max_iterations + 1):
+                result.iterations = iteration
+                text, calls, stop_reason = await self._exchange(messages, iteration, on_event)
+                if text:
+                    result.text = text
+                result.stop_reason = stop_reason
+
+                if not calls:
+                    return result
+
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": text or None,
+                        "tool_calls": [
+                            {
+                                "id": call.id,
+                                "type": "function",
+                                "function": {
+                                    "name": call.name,
+                                    "arguments": json.dumps(
+                                        call.arguments, ensure_ascii=False
+                                    ),
+                                },
+                            }
+                            for call in calls
+                        ],
+                    }
+                )
+                executed = await execute_tool_calls(broker, calls, on_event=on_event)
+                result.tool_calls.extend(call for call, _ in executed)
+                result.tool_results.extend(response for _, response in executed)
+                for call, tool_response in executed:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": tool_response.to_tool_result_text(),
+                        }
+                    )
+
+            result.error = (
+                f"agent exceeded {self.max_iterations} tool iterations without finishing"
+            )
+            return result
+        except asyncio.CancelledError:
+            await broker.close()
+            raise
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("subprocess agent turn failed")
+            result.error = f"{type(exc).__name__}: {exc}"
+            return result
+
+    async def _exchange(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        iteration: int,
+        on_event: EventSink | None,
+    ) -> tuple[str, list[ToolCall], str | None]:
+        process = await asyncio.create_subprocess_exec(
+            *self.argv,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(self.cwd) if self.cwd is not None else None,
+            env=self.env,
+        )
+        request = json.dumps(
+            {
+                "type": "request",
+                "messages": [dict(row) for row in messages],
+                "tools": to_dialect(self._specs, self.dialect),
+            },
+            ensure_ascii=False,
+        )
+        try:
+            return await asyncio.wait_for(
+                self._pump(process, request, iteration, on_event),
+                timeout=self.timeout_seconds,
+            )
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+            raise
+        finally:
+            if process.returncode is None:
+                with contextlib.suppress(ProcessLookupError):
+                    process.kill()
+                await process.wait()
+
+    async def _pump(
+        self,
+        process: Any,
+        request: str,
+        iteration: int,
+        on_event: EventSink | None,
+    ) -> tuple[str, list[ToolCall], str | None]:
+        assert process.stdin is not None and process.stdout is not None
+        process.stdin.write((request + "\n").encode("utf-8"))
+        await process.stdin.drain()
+        process.stdin.close()
+
+        text_parts: list[str] = []
+        calls: list[ToolCall] = []
+        stop_reason: str | None = None
+        final_text: str | None = None
+
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            try:
+                row = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, ValueError):
+                logger.debug("subprocess agent emitted a non-JSON line; skipping")
+                continue
+            if not isinstance(row, Mapping):
+                continue
+            kind = row.get("type")
+            if kind == "delta":
+                piece = str(row.get("text") or "")
+                if piece:
+                    text_parts.append(piece)
+                    if on_event is not None:
+                        on_event(
+                            "message_delta",
+                            {"item_id": f"msg-{iteration}", "text": piece},
+                        )
+            elif kind == "tool_call":
+                name = row.get("name")
+                arguments = row.get("arguments")
+                if isinstance(name, str) and name:
+                    calls.append(
+                        ToolCall(
+                            id=str(row.get("id") or f"call-{iteration}-{len(calls)}"),
+                            name=name,
+                            arguments=(
+                                dict(arguments)
+                                if isinstance(arguments, Mapping)
+                                else _json_arguments(arguments)
+                            ),
+                        )
+                    )
+            elif kind == "done":
+                if row.get("text") is not None:
+                    final_text = str(row.get("text"))
+                stop_reason = (
+                    str(row.get("stop_reason")) if row.get("stop_reason") else None
+                )
+                break
+            elif kind == "error":
+                raise RuntimeError(str(row.get("message") or "model runner failed"))
+
+        stderr = await process.stderr.read() if process.stderr is not None else b""
+        await process.wait()
+        if process.returncode not in (0, None) and not calls and final_text is None:
+            detail = stderr.decode("utf-8", errors="replace").strip()[:500]
+            raise RuntimeError(
+                f"model runner exited with status {process.returncode}"
+                + (f": {detail}" if detail else "")
+            )
+        if stderr:
+            logger.debug(
+                "subprocess agent stderr: %s",
+                stderr.decode("utf-8", errors="replace")[:2000],
+            )
+
+        text = final_text if final_text is not None else "".join(text_parts)
+        if text and on_event is not None:
+            on_event("message", {"item_id": f"msg-{iteration}", "text": text})
+        return text, calls, stop_reason
+
+
+def _json_arguments(raw: object) -> dict[str, Any]:
+    """Parse tool arguments, treating anything unusable as empty.
+
+    The broker validates the payload anyway; failing the whole turn because a
+    model emitted malformed JSON would deny it the chance to be told so.
+    """
+    if isinstance(raw, Mapping):
+        return dict(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return {}
+    return dict(value) if isinstance(value, Mapping) else {}
 
 
 # ── Scripted (no network) ───────────────────────────────────────────────────
@@ -497,6 +855,7 @@ __all__ = [
     "EventSink",
     "OpenAICompatibleAgent",
     "ScriptedAgent",
+    "SubprocessAgent",
     "ToolCall",
     "TurnResult",
     "execute_tool_calls",

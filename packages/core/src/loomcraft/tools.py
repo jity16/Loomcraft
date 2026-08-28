@@ -33,6 +33,7 @@ REQUEST_INPUTS = "request_inputs"
 RUN_CAPABILITY = "run_capability"
 RUN_WORKFLOW = "run_workflow"
 REGISTER_ARTIFACTS = "register_artifacts"
+EXECUTE_PLAN = "execute_plan"
 
 #: Read-only tools. The broker keeps these available even while a turn is
 #: blocked waiting for user files, because gathering evidence is always safe.
@@ -42,7 +43,15 @@ READ_ONLY_TOOLS: frozenset[str] = frozenset(
 
 #: Tools that change durable state or start work.
 MUTATING_TOOLS: frozenset[str] = frozenset(
-    {PUBLISH_PLAN, UPDATE_STEP, REQUEST_INPUTS, RUN_CAPABILITY, RUN_WORKFLOW, REGISTER_ARTIFACTS}
+    {
+        PUBLISH_PLAN,
+        UPDATE_STEP,
+        REQUEST_INPUTS,
+        RUN_CAPABILITY,
+        RUN_WORKFLOW,
+        REGISTER_ARTIFACTS,
+        EXECUTE_PLAN,
+    }
 )
 
 
@@ -107,7 +116,8 @@ PLAN_STEP_SCHEMA: dict[str, Any] = {
     "type": "object",
     "description": (
         "One DAG step. Use title/kind (not label/type). `capability` is required "
-        "only for capability and workflow steps and forbidden otherwise."
+        "for capability and workflow steps, optional on a review step that binds "
+        "a review-scoped capability, and forbidden otherwise."
     ),
     "properties": {
         "id": _STEP_ID,
@@ -130,8 +140,129 @@ PLAN_STEP_SCHEMA: dict[str, Any] = {
         },
         "capability": {"type": ["string", "null"], "maxLength": 160},
         "description": {"type": "string", "maxLength": 1000},
+        "retry": {
+            "type": "object",
+            "description": (
+                "Retry budget for this step. Omit to inherit the capability's "
+                "own policy; setting it overrides that policy."
+            ),
+            "properties": {
+                "max_attempts": {"type": "integer", "minimum": 0, "maximum": 20},
+                "backoff_seconds": {"type": "number", "minimum": 0, "maximum": 3600},
+                "backoff_multiplier": {"type": "number", "minimum": 1, "maximum": 10},
+                "max_backoff_seconds": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 86400,
+                },
+            },
+            "additionalProperties": False,
+        },
+        "timeout_seconds": {
+            "type": ["number", "null"],
+            "exclusiveMinimum": 0,
+            "description": "Wall-clock ceiling for one attempt of this step.",
+        },
+        "on_failure": {
+            "type": "string",
+            "enum": ["stop", "continue", "require_approval"],
+            "description": (
+                "stop = skip everything downstream (default); continue = let "
+                "independent dependents run anyway, for a branch whose empty "
+                "result is still a result; require_approval = park at a human "
+                "decision instead of failing."
+            ),
+        },
+        "metadata": {
+            "type": "object",
+            "description": "Free-form annotations carried through to the UI.",
+        },
     },
     "required": ["id", "title", "kind"],
+    "additionalProperties": False,
+}
+
+ANALYSIS_OBJECTIVE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "One question this plan exists to answer. Declare these before you "
+        "execute, so the record shows what was asked, not only what was run."
+    ),
+    "properties": {
+        "id": _STEP_ID,
+        "question": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "status": {
+            "type": ["string", "null"],
+            "enum": [
+                "planned",
+                "executed",
+                "not_estimable",
+                "blocked",
+                "deferred_by_scope",
+                None,
+            ],
+        },
+        "estimand": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "The quantity that would answer the question.",
+        },
+        "independent_unit": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "What counts as one independent observation.",
+        },
+        "expected_outputs": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {"type": "string", "maxLength": 300},
+        },
+        "method_families": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {"type": "string", "maxLength": 300},
+        },
+        "validation_requirements": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {"type": "string", "maxLength": 300},
+        },
+    },
+    "required": ["id", "question"],
+    "additionalProperties": False,
+}
+
+ANALYSIS_COVERAGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "How one objective was discharged. `executed` requires a step or "
+        "artifact as evidence; not_estimable/blocked/deferred_by_scope require "
+        "a next_action. Saying a question could not be answered is a valid "
+        "result — silently dropping it is not."
+    ),
+    "properties": {
+        "objective_id": _STEP_ID,
+        "status": {
+            "type": "string",
+            "enum": [
+                "planned",
+                "executed",
+                "not_estimable",
+                "blocked",
+                "deferred_by_scope",
+            ],
+        },
+        "reason": {"type": "string", "minLength": 1, "maxLength": 1000},
+        "selected_method": {"type": ["string", "null"], "maxLength": 300},
+        "step_ids": {"type": "array", "maxItems": 12, "items": _STEP_ID},
+        "artifact_refs": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {"type": "string", "minLength": 1, "maxLength": 300},
+        },
+        "next_action": {"type": ["string", "null"], "maxLength": 500},
+    },
+    "required": ["objective_id", "status", "reason"],
     "additionalProperties": False,
 }
 
@@ -150,6 +281,19 @@ PLAN_SCHEMA: dict[str, Any] = {
             "maxLength": 2000,
             "description": "Why this revision replaces the previous one. Required when revising.",
         },
+        "analysis_profile": {"type": ["string", "null"], "maxLength": 500},
+        "objectives": {
+            "type": "array",
+            "maxItems": 64,
+            "items": ANALYSIS_OBJECTIVE_SCHEMA,
+        },
+        "analysis_coverage": {
+            "type": "array",
+            "maxItems": 64,
+            "items": ANALYSIS_COVERAGE_SCHEMA,
+            "description": "One entry per declared objective.",
+        },
+        "metadata": {"type": "object"},
         "steps": {
             "type": "array",
             "minItems": 1,
@@ -241,13 +385,15 @@ def tool_specs(
     *,
     include_workflows: bool = True,
     include_inspection: bool = True,
+    include_plan_execution: bool = True,
     max_search_results: int = 10,
 ) -> list[ToolSpec]:
     """Return the canonical tool surface.
 
     Drop tools your deployment does not offer — a registry with no workflows
     should pass ``include_workflows=False`` so the model never proposes a
-    ``workflow`` step it cannot run.
+    ``workflow`` step it cannot run. ``include_plan_execution=False`` removes
+    ``execute_plan``, leaving the agent to dispatch each step itself.
     """
     specs: list[ToolSpec] = [
         _tool(
@@ -388,7 +534,45 @@ def tool_specs(
             ["step_id", "artifacts"],
         )
     )
+    if include_plan_execution:
+        specs.append(
+            _tool(
+                EXECUTE_PLAN,
+                "Run the whole published plan in one audited execution. "
+                "Independent steps run concurrently, each step uses its own "
+                "retry and timeout, and the run parks if a step needs approval. "
+                "Prefer this once the plan is settled; use run_capability when "
+                "you need to think between steps. Returns when the run finishes "
+                "or pauses — read the result before claiming anything.",
+                {
+                    "inputs": {
+                        "type": "object",
+                        "description": (
+                            "Optional per-step bindings, keyed by step id: "
+                            '{"qc": {"inputs": {"table": "upload:abc"}, '
+                            '"parameters": {"threshold": 0.05}}}. Steps fed by '
+                            "an upstream step need no entry."
+                        ),
+                    },
+                    "timeout_seconds": {
+                        "type": ["number", "null"],
+                        "exclusiveMinimum": 0,
+                        "description": "Ceiling for the whole plan, not one step.",
+                    },
+                },
+            )
+        )
     return specs
+
+
+def dynamic_tool_specs(**kwargs: Any) -> list[dict[str, Any]]:
+    """The tool catalog in the shape an app-server host passes to a model.
+
+    Codex and other app-server runtimes take a list of plain tool objects and
+    call back with ``item/tool/call``; this is that list. See
+    :class:`loomcraft.protocol.AppServerBridge` for the other half.
+    """
+    return to_dialect(tool_specs(**kwargs), "openai_responses")
 
 
 def to_dialect(specs: Sequence[ToolSpec], dialect: Dialect = "canonical") -> list[dict[str, Any]]:
@@ -431,35 +615,51 @@ Work in this order:
    `capability_search` to find work you are allowed to run.
 2. Decide whether you can proceed. If required files are missing, call
    `request_inputs` with typed slots and end your turn. Do not guess at data.
-3. Publish a plan. Call `publish_plan` with a DAG whose `depends_on` edges reflect
+3. State the questions. When the task is investigative, declare `objectives` —
+   the questions the work must answer — in the plan. Give each one an
+   `analysis_coverage` entry. You will be held to them: a later revision may not
+   drop an objective, only mark it answered, `not_estimable`, `blocked`, or
+   `deferred_by_scope` with a `next_action`.
+4. Publish a plan. Call `publish_plan` with a DAG whose `depends_on` edges reflect
    real data dependencies — independent steps with no edge between them run in
-   parallel, so do not serialise work that need not be sequential.
-4. Execute. Run `run_capability` / `run_workflow` for those steps; do the
-   `dynamic` and `review` steps yourself and report them with `update_step`.
-   Read the artifacts a step produced before you claim it succeeded.
-5. Replan on failure. If a step fails, publish a higher `revision` with a `reason`
+   parallel, so do not serialise work that need not be sequential. Set `retry`,
+   `timeout_seconds` and `on_failure` where the work warrants it.
+5. Execute. Either call `execute_plan` to run the settled graph in one go, or
+   drive it step by step with `run_capability` / `run_workflow` when you need to
+   reason in between. Do `dynamic` and unbound `review` steps yourself and report
+   them with `update_step`. Read the artifacts a step produced before you claim
+   it succeeded.
+6. Replan on failure. If a step fails, publish a higher `revision` with a `reason`
    explaining what you learned and what you will do differently. Do not retry the
    same call unchanged.
-6. Deliver. Register final files with `register_artifacts`, then answer with what
-   you actually verified.
+7. Deliver. Register final files with `register_artifacts`. Answer with what you
+   actually verified, and say plainly which objectives went unanswered and why.
 
 Rules the server enforces, so do not fight them:
 
-- A step only runs when all of its dependencies have succeeded.
-- You cannot set the status of a `capability` or `workflow` step; only its
-  execution tool can.
+- A step only runs when all of its dependencies have succeeded — unless a
+  dependency declared `on_failure: continue`.
+- You cannot set the status of a `capability` or `workflow` step, or of a
+  `review` step bound to a capability; only its execution tool can.
 - Plan revisions must increase, and a revision replacing an earlier plan must
   carry a `reason`.
+- An objective marked `executed` must cite a step or artifact as evidence.
 - Every file path you supply must be a source ref: `upload:<id>`,
   `artifact:<id>`, or `scratch:<relative-path>`.
+
+An unanswered question reported honestly is a better result than a confident
+answer the evidence does not support.
 """
 
 
 __all__ = [
+    "ANALYSIS_COVERAGE_SCHEMA",
+    "ANALYSIS_OBJECTIVE_SCHEMA",
     "ARTIFACT_ITEM_SCHEMA",
     "CAPABILITY_SEARCH",
     "CATALOG_SEARCH",
     "Dialect",
+    "EXECUTE_PLAN",
     "FILE_REQUIREMENT_SCHEMA",
     "INPUT_REQUEST_SCHEMA",
     "INSPECT_SOURCE",
@@ -477,6 +677,7 @@ __all__ = [
     "UPDATE_STEP",
     "ToolSpec",
     "anthropic_tools",
+    "dynamic_tool_specs",
     "mcp_tools",
     "openai_tools",
     "to_dialect",

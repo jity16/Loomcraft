@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  core:
+    name: core (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: python -m pip install -e "packages/core[dev]"
+      - name: Lint
+        run: python -m ruff check packages/core/src --select F,E9,B023
+      - name: Test
+        run: python -m pytest -q packages/core/tests
+      - name: Schemas are current
+        run: python tools/export_schema.py --check
+      - name: Documentation links and symbols
+        run: python tools/check_docs.py
+
+  renderer:
+    name: renderer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        run: npm ci --prefix packages/renderer
+      - name: Typecheck
+        run: npm run typecheck --prefix packages/renderer
+      - name: Test
+        run: npm test --prefix packages/renderer
+      - name: Build
+        run: npm run build --prefix packages/renderer
+
+  examples:
+    name: examples run offline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: python -m pip install -e "packages/core[dev]"
+      - name: Scripted examples need no API key
+        run: |
+          python examples/01-gwas-discovery/run_scripted.py
+          python examples/02-literature-meta/run_scripted.py
+          python examples/03-objectives-and-scheduling/run.py

@@ -59,9 +59,9 @@ class FileRequirement(BaseModel):
                     for char in extension[1:]
                 )
             ):
-                raise ValueError(f"invalid file extension {value!r}")
+                raise ValueError("invalid file extension")
             if extension in normalized:
-                raise ValueError(f"duplicate file extension {extension!r}")
+                raise ValueError("duplicate file extension")
             normalized.append(extension)
         return normalized
 
@@ -74,7 +74,7 @@ class FileRequirement(BaseModel):
             if not hint or len(hint) > 200:
                 raise ValueError("field hints must contain 1..200 characters")
             if hint in normalized:
-                raise ValueError(f"duplicate field hint {hint!r}")
+                raise ValueError("duplicate field hint")
             normalized.append(hint)
         return normalized
 
@@ -116,6 +116,41 @@ class FileInputRequest(BaseModel):
         return self
 
 
+def _public_validation_summary(error: Exception) -> str:
+    """Location + reason, without echoing the values that were rejected.
+
+    Same reasoning as ``plan._public_summary``: a model handed its own bad
+    payload back tends to send it again, and the payload may quote file
+    contents.
+    """
+    errors_method = getattr(error, "errors", None)
+    if not callable(errors_method):
+        return "invalid file input request"
+    try:
+        rows = errors_method()
+    except Exception:  # pragma: no cover - defensive boundary around pydantic
+        return "invalid file input request"
+    hints: list[str] = []
+    for row in rows[:8]:
+        if not isinstance(row, dict):
+            continue
+        location = row.get("loc") or ()
+        rendered = ""
+        for part in location if isinstance(location, (tuple, list)) else ():
+            rendered = (
+                f"{rendered}[{part}]"
+                if isinstance(part, int)
+                else f"{rendered}.{part}"
+                if rendered
+                else str(part)
+            )
+        message = str(row.get("msg") or "invalid value")
+        if message.startswith("Value error, "):
+            message = message[len("Value error, ") :]
+        hints.append(f"{rendered or 'request'}: {message}")
+    return ("; ".join(hints) or "invalid file input request")[:800]
+
+
 def validate_input_request(raw: object) -> dict[str, Any]:
     """Validate a model-authored request and stamp a server-owned request id.
 
@@ -132,7 +167,9 @@ def validate_input_request(raw: object) -> dict[str, Any]:
             {**raw, "request_id": f"input-{secrets.token_hex(8)}"}
         )
     except Exception as exc:
-        raise InputRequestError(str(exc), public_message=str(exc)[:800]) from exc
+        raise InputRequestError(
+            str(exc), public_message=_public_validation_summary(exc)
+        ) from exc
     return request.model_dump(mode="json")
 
 

@@ -18,6 +18,7 @@ want available as a single unit, still executed by the same engine.
 from __future__ import annotations
 
 import json
+import math
 import re
 from copy import deepcopy
 from typing import Any, Literal
@@ -90,6 +91,10 @@ class Parameter(BaseModel):
         elif self.type == "number":
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 raise ContractError(f"parameter {name!r} must be numeric")
+            if not math.isfinite(float(value)):
+                # NaN and infinity pass every range check and then break
+                # strict JSON on the way to the event log and the model.
+                raise ContractError(f"parameter {name!r} must be finite")
         elif self.type == "string":
             if not isinstance(value, str) or not value.strip():
                 raise ContractError(f"parameter {name!r} must be a non-empty string")
@@ -136,8 +141,15 @@ class CapabilityInput(BaseModel):
     def _valid_extensions(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         normalized = tuple(dict.fromkeys(value.strip().lower() for value in values))
         for value in normalized:
-            if not value.startswith(".") or len(value) < 2:
-                raise ValueError(f"input extension {value!r} must start with a dot")
+            if (
+                not value.startswith(".")
+                or not 2 <= len(value) <= 32
+                or any(
+                    not (character.isalnum() or character in {".", "_", "-", "+"})
+                    for character in value[1:]
+                )
+            ):
+                raise ValueError("input extension is invalid")
         return normalized
 
     @property
@@ -307,6 +319,12 @@ class Capability(BaseModel):
                 key: value.json_schema() for key, value in self.parameters.items()
             },
             "outputs": [item.model_dump(mode="json") for item in self.outputs],
+            # Execution policy is part of the contract: an agent choosing
+            # between two capabilities should be able to see that one retries
+            # three times over ten minutes and the other gets one shot.
+            "timeout_seconds": self.timeout_seconds,
+            "max_attempts": self.max_attempts,
+            "retry_backoff_seconds": self.retry_backoff_seconds,
             "requires_approval": self.requires_approval,
             "execution_tool": "run_capability",
         }
@@ -439,6 +457,7 @@ class Registry:
         self._capabilities: dict[str, Capability] = {}
         self._workflows: dict[str, Workflow] = {}
         self._runners: dict[str, RunnerFn] = {}
+        self._step_handlers: dict[str, RunnerFn] = {}
 
     # ── Registration ────────────────────────────────────────────────────────
 
@@ -457,6 +476,29 @@ class Registry:
 
     def has_runner(self, key: str | None) -> bool:
         return bool(key) and key in self._runners
+
+    def register_step_handler(
+        self, kind: str, fn: RunnerFn, *, replace: bool = False
+    ) -> None:
+        """Register how ``execute_plan`` should run one agent-owned step kind.
+
+        ``dynamic``, ``review`` and ``answer`` steps have no registered
+        capability by definition, so the whole-plan scheduler needs somewhere
+        to send them. Hosts that only ever drive steps one at a time through
+        ``run_capability`` never need this.
+        """
+        if kind not in {"dynamic", "review", "answer"}:
+            raise RegistryError(
+                "step handlers are supported for answer, dynamic, and review steps"
+            )
+        if not callable(fn):
+            raise RegistryError("step handler must be callable")
+        if kind in self._step_handlers and not replace:
+            raise RegistryError(f"step handler for {kind!r} is already registered")
+        self._step_handlers[kind] = fn
+
+    def step_handler(self, kind: str) -> RunnerFn | None:
+        return self._step_handlers.get(kind)
 
     def register_capability(
         self, capability: Capability, *, replace: bool = False
@@ -627,6 +669,8 @@ def merge_registries(*registries: Registry) -> Registry:
             merged.register_capability(capability, replace=True)
         for workflow in registry.workflows.values():
             merged.register_workflow(workflow, replace=True)
+        for kind, handler in registry._step_handlers.items():
+            merged.register_step_handler(kind, handler, replace=True)
     return merged
 
 

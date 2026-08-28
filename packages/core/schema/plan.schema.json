@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/jity16/Loomcraft/schema/plan.schema.json",
+  "title": "LoomCraft plan",
+  "description": "A complete versioned task DAG. Required fields are goal, revision and steps. Step execution state is owned by the server — do not send it.",
+  "type": "object",
+  "properties": {
+    "goal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000
+    },
+    "reason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 2000,
+      "description": "Why this revision replaces the previous one. Required when revising."
+    },
+    "analysis_profile": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 500
+    },
+    "objectives": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "description": "One question this plan exists to answer. Declare these before you execute, so the record shows what was asked, not only what was run.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "status": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "planned",
+              "executed",
+              "not_estimable",
+              "blocked",
+              "deferred_by_scope",
+              null
+            ]
+          },
+          "estimand": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "The quantity that would answer the question."
+          },
+          "independent_unit": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "What counts as one independent observation."
+          },
+          "expected_outputs": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "string",
+              "maxLength": 300
+            }
+          },
+          "method_families": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "string",
+              "maxLength": 300
+            }
+          },
+          "validation_requirements": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "string",
+              "maxLength": 300
+            }
+          }
+        },
+        "required": [
+          "id",
+          "question"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "analysis_coverage": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "description": "How one objective was discharged. `executed` requires a step or artifact as evidence; not_estimable/blocked/deferred_by_scope require a next_action. Saying a question could not be answered is a valid result — silently dropping it is not.",
+        "properties": {
+          "objective_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "executed",
+              "not_estimable",
+              "blocked",
+              "deferred_by_scope"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          },
+          "selected_method": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 300
+          },
+          "step_ids": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            }
+          },
+          "artifact_refs": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            }
+          },
+          "next_action": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "objective_id",
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "description": "One entry per declared objective."
+    },
+    "metadata": {
+      "type": "object"
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "description": "One DAG step. Use title/kind (not label/type). `capability` is required for capability and workflow steps, optional on a review step that binds a review-scoped capability, and forbidden otherwise.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "answer",
+              "capability",
+              "workflow",
+              "dynamic",
+              "review"
+            ],
+            "description": "answer = compose the final reply; capability = one registered typed unit of work; workflow = a registered multi-step SOP; dynamic = work you perform yourself in scratch; review = verify produced artifacts before relying on them."
+          },
+          "depends_on": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+            },
+            "description": "Step ids that must succeed before this step may run."
+          },
+          "capability": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 160
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 1000
+          },
+          "retry": {
+            "type": "object",
+            "description": "Retry budget for this step. Omit to inherit the capability's own policy; setting it overrides that policy.",
+            "properties": {
+              "max_attempts": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 20
+              },
+              "backoff_seconds": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 3600
+              },
+              "backoff_multiplier": {
+                "type": "number",
+                "minimum": 1,
+                "maximum": 10
+              },
+              "max_backoff_seconds": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 86400
+              }
+            },
+            "additionalProperties": false
+          },
+          "timeout_seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "exclusiveMinimum": 0,
+            "description": "Wall-clock ceiling for one attempt of this step."
+          },
+          "on_failure": {
+            "type": "string",
+            "enum": [
+              "stop",
+              "continue",
+              "require_approval"
+            ],
+            "description": "stop = skip everything downstream (default); continue = let independent dependents run anyway, for a branch whose empty result is still a result; require_approval = park at a human decision instead of failing."
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Free-form annotations carried through to the UI."
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "kind"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "goal",
+    "revision",
+    "steps"
+  ],
+  "additionalProperties": false
+}

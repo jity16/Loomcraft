@@ -8,6 +8,7 @@ building a different node model on top of LoomCraft.
 
 from __future__ import annotations
 
+import heapq
 from collections import deque
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
@@ -133,18 +134,19 @@ def topological_order(depends_on: Adjacency) -> list[str]:
         for dependency in unique:
             downstream[dependency].append(node)
 
-    ready = deque(sorted(node for node, degree in indegree.items() if degree == 0))
+    # A heap rather than a queue: this yields the lexicographically smallest
+    # valid order, so the same DAG always prints the same sequence regardless of
+    # the order its nodes were declared in.
+    ready = [node for node, degree in indegree.items() if degree == 0]
+    heapq.heapify(ready)
     order: list[str] = []
     while ready:
-        node = ready.popleft()
+        node = heapq.heappop(ready)
         order.append(node)
-        newly_ready: list[str] = []
         for target in downstream[node]:
             indegree[target] -= 1
             if indegree[target] == 0:
-                newly_ready.append(target)
-        for target in sorted(newly_ready):
-            ready.append(target)
+                heapq.heappush(ready, target)
     if len(order) != len(depends_on):
         raise ValueError("graph contains a cycle")
     return order
